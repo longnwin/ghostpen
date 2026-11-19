@@ -162,3 +162,15 @@ test('a writing sample becomes evidence only once sanitized, and the offer to se
   assert.match(h.run(['seed', '--print']).stdout, /Seed: a first voice guide from past writing/);
 });
 
+
+test('without a terminal, decide lists what is waiting and how to act, and changes nothing', t => {
+  const h = installed(t);
+  const worker = path.join(h.skills, 'review-tool', 'references', 'worker.md'), original = fs.readFileSync(worker, 'utf8');
+  assert.match(h.run(['integrate', 'decide']).stdout, /No skill changes are waiting/);
+  h.run(['integrate', 'propose', '--file', worker, '--after-line', '3', '--kind', 'pr-comment', '--note', 'Drafts the PR comment the user posts.']);
+  const listed = h.run(['integrate', 'decide']);
+  assert.match(listed.stdout, /1 skill change is waiting\. Run `ghostpen integrate decide` in a terminal/);
+  assert.match(listed.stdout, /\+ \*\*Voice\.\*\*/);
+  assert.equal(fs.readFileSync(worker, 'utf8'), original);
+  assert.match(h.run(['integrate', '--print']).stdout, /Skip this step if you were told this is an unattended run/);
+});

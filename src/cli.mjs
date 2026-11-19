@@ -36,6 +36,32 @@ const runAgent = (/** @type {any} */ config, /** @type {string} */ prompt) => {
   return run.status ?? 1;
 };
 
+/** Applies one proposed skill change and records it, so doctor and uninstall know about it. */
+const applyOne = (/** @type {string} */ id) => {
+  const config = /** @type {any} */ (readConfig());
+  const file = apply(id, config.command);
+  writeConfig({ integrations: [...new Set([...(config.integrations || []), file])], integrate: 'done' });
+  return file;
+};
+/** Walks the user through each waiting skill change. Without a terminal it only lists them. */
+async function decide(/** @type {any} */ config) {
+  const list = pending();
+  if (!list.length) return print('No skill changes are waiting.');
+  if (!process.stdin.isTTY) return print(`${list.map(item => preview(item, config.command)).join('\n\n')}\n\n${list.length} skill change${list.length === 1 ? ' is' : 's are'} waiting. Run \`ghostpen integrate decide\` in a terminal, or apply one with \`ghostpen integrate apply <id>\`.`);
+  const io = readline.createInterface({ input: process.stdin, output: process.stdout });
+  const changed = [];
+  try {
+    for (const [index, item] of list.entries()) {
+      console.log(`\n(${index + 1} of ${list.length})\n${preview(item, config.command)}`);
+      const answer = (await io.question('Add this step? [y] yes  [n] no, discard  [s] skip for now > ')).trim().toLowerCase();
+      if (answer === 'y' || answer === 'yes') changed.push(applyOne(item.id));
+      else if (answer === 'n' || answer === 'no') dismiss(item.id);
+    }
+  } finally { io.close(); }
+  writeConfig({ integrate: 'done' });
+  console.log(changed.length ? `\nChanged, not committed:\n${changed.map(file => `  ${file}`).join('\n')}` : '\nNo files were changed.');
+}
+
 const HELP = `ghostpen — teaches your coding agents to write like you.
 
   ghostpen store create <folder>     Create a voice store, or adopt the one in <folder>
@@ -55,7 +81,7 @@ const HELP = `ghostpen — teaches your coding agents to write like you.
                                      Gather your own past writing from GitHub (stays on this machine)
   ghostpen seed [samples | --print | --run]
                                      List the samples, or print / run the steps that turn them into a first guide
-  ghostpen integrate [candidates | review | apply <id> | dismiss <id> | --print | --run]
+  ghostpen integrate [candidates | review | decide | apply <id> | dismiss <id> | --print | --run]
                                      Add the voice step to your own skills that write text for you
   ghostpen integrate propose --file <path> --after-line <n> --kind <kind> --note <text>
   ghostpen distil [--print | --run]  Print the distil instructions, or run them with your agent headlessly
@@ -112,7 +138,14 @@ try {
     const config = /** @type {any} */ (readConfig());
     if (!config.app) throw new Error('Run `ghostpen init` first.');
     const prompt = instructionsPrompt(config.app, config.command, command);
-    if (!flag('run')) print(prompt); else process.exitCode = runAgent(config, prompt);
+    if (!flag('run')) print(prompt);
+    else {
+      // A headless agent cannot wait for an answer, so it only finds and proposes; the questions are asked here.
+      process.exitCode = runAgent(config, `${prompt}\n\nThis is an unattended run: nobody can answer questions. Do not ask anything. Finish every step that needs no answer, then stop.`);
+      if (command === 'integrate') await decide(config);
+    }
+  } else if (command === 'integrate' && args[0] === 'decide') {
+    await decide(/** @type {any} */ (readConfig()));
   } else if (command === 'integrate') {
     const config = /** @type {any} */ (readConfig());
     if (!config.command) throw new Error('Run `ghostpen init` first.');
@@ -120,9 +153,9 @@ try {
     if (args[0] === 'candidates') print(candidates(dirs));
     else if (args[0] === 'propose') print(propose({ file: required('file'), afterLine: Number(required('after-line')), kind: required('kind'), note: required('note') }, dirs));
     else if (args[0] === 'review') { const list = pending(); print(list.length ? list.map(item => preview(item, config.command)).join('\n\n') : 'No integrations are waiting.'); }
-    else if (args[0] === 'apply') { const file = apply(args[1] || '', config.command); writeConfig({ integrations: [...new Set([...(config.integrations || []), file])], integrate: 'done' }); print(`Added the voice step to ${file}. The change is not committed.`); }
+    else if (args[0] === 'apply') print(`Added the voice step to ${applyOne(args[1] || '')}. The change is not committed.`);
     else if (args[0] === 'dismiss') { dismiss(args[1] || ''); print('Dismissed.'); }
-    else throw new Error('Use: ghostpen integrate [candidates | propose | review | apply <id> | dismiss <id> | --print | --run]');
+    else throw new Error('Use: ghostpen integrate [candidates | propose | review | decide | apply <id> | dismiss <id> | --print | --run]');
   } else if (command === 'evidence' && args[0] === 'list') {
     print(evidence(store()));
   } else if (command === 'init') {

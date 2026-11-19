@@ -69,7 +69,7 @@ If you have skills that draft text for you, `integrate` adds a short step to the
 ghostpen integrate --run
 ```
 
-Your agent finds the places and proposes each one. `ghostpen` writes the inserted text, so the agent only chooses where it goes. You see the exact lines before anything changes, and nothing is committed for you. Only skills in your own user-level skills folder are considered.
+Your agent finds the places and proposes each one, then the command shows you each proposal and asks whether to add it. `ghostpen` writes the inserted text, so the agent only chooses where it goes. Nothing is committed for you. `ghostpen integrate decide` asks again about anything you skipped. Only skills in your own user-level skills folder are considered.
 
 ## What is stored, and where
 

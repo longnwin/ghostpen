@@ -32,7 +32,10 @@ sentence: what this step writes and where it is published>"`. `--kind` is one of
 
 ## 4. Ask the user
 
-Run `{{GHOSTPEN}} integrate review` and show the user its output: each proposal with the exact lines to be
+Skip this step if you were told this is an unattended run: nobody can answer, and the command that started
+you will ask the user itself. Stop after step 3 without asking anything.
+
+Otherwise, run `{{GHOSTPEN}} integrate review` and show the user its output: each proposal with the exact lines to be
 added. Ask which to apply. For each one they approve run `{{GHOSTPEN}} integrate apply <id>`; for each they
 decline run `{{GHOSTPEN}} integrate dismiss <id>`. Do not commit or push the changed files; tell the user
 which files changed so they can review and commit them.
