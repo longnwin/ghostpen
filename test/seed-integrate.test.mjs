@@ -29,31 +29,57 @@ test('samples are spread across time instead of taken from the newest block', ()
   assert.equal(spread(items.slice(0, 3), 10).length, 3);
 });
 
-test('collecting keeps only the user’s own usable writing, honours the cutoff date, and replaces earlier samples', async t => {
-  const store = createStore(path.join(temp(t), 'voice'));
-  const queries = [];
+/** A fictional GitHub: one page of pull requests the user reviewed or commented on, and one page they opened. */
+const fakeGitHub = ({ fail = () => false } = {}) => {
+  const calls = [];
   const run = async args => {
-    const route = args.find(a => a === 'user' || a === 'search/issues' || a.startsWith('repos/'));
-    if (route === 'user') return 'fictional-user\n';
-    if (route === 'search/issues') { queries.push(args.find(a => a.startsWith('q='))); return JSON.stringify({ url: 'https://github.com/fictional/repo/pull/7' }) + '\n'; }
-    const line = (body, at) => JSON.stringify({ body, source: `https://github.com/fictional/repo/pull/7#r${at}`, at, path: 'a.ts', line: 1 });
-    if (route.includes('/pulls/7/comments')) return [
-      line('This throws when the list is empty. Guard it before reading the first item.', '2024-03-01T00:00:00Z'),
-      line('This throws when the list is empty. Guard it before reading the first item.', '2024-03-02T00:00:00Z'),
-      line('LGTM', '2024-03-03T00:00:00Z'),
-      line('Please rename this so the unit is in the name; minutes and seconds get mixed up here.', '2025-06-01T00:00:00Z'),
-    ].join('\n') + '\n';
-    if (route.endsWith('/pulls/7')) return JSON.stringify({ body: 'Adds retry to the uploader.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)', source: 'https://github.com/fictional/repo/pull/7', at: '2024-02-01T00:00:00Z' }) + '\n';
-    return '';
+    calls.push(args);
+    const what = args.includes('graphql') ? 'comments' : args.includes('search/issues') ? 'search' : 'user';
+    if (fail(what)) throw new Error('GitHub did not answer in time.');
+    if (what === 'user') return 'fictional-user\n';
+    if (what === 'comments') {
+      const reviewed = args.some(a => a.startsWith('search=') && a.includes('reviewed-by:fictional-user'));
+      const comment = (body, createdAt, repo = 'fictional/repo') => ({ body, url: `https://github.com/${repo}/pull/7#r${createdAt}`, createdAt, path: 'a.ts', line: 1, originalLine: 1 });
+      const nodes = reviewed ? [{ reviews: { nodes: [{ body: '', url: 'https://github.com/fictional/repo/pull/7#review1', submittedAt: '2024-03-01T00:00:00Z', comments: { nodes: [
+          comment('This throws when the list is empty. Guard it before reading the first item.', '2024-03-01T00:00:00Z'),
+          comment('This throws when the list is empty. Guard it before reading the first item.', '2024-03-02T00:00:00Z'),
+          comment('LGTM', '2024-03-03T00:00:00Z'),
+          comment('Please rename this so the unit is in the name; minutes and seconds get mixed up here.', '2025-06-01T00:00:00Z'),
+          comment('In another repository entirely, this loop reads one item past the end of the list.', '2024-04-01T00:00:00Z', 'elsewhere/thing'),
+        ] } }] }, comments: { nodes: [] } }]
+        : [{ reviews: { nodes: [] }, comments: { nodes: [
+          { author: { login: 'fictional-user' }, body: 'I would split this into two changes so the rename can land on its own first.', url: 'https://github.com/fictional/repo/pull/8#c1', createdAt: '2024-05-01T00:00:00Z' },
+          { author: { login: 'someone-else' }, body: 'A comment by another person on the same pull request, which is not the user’s writing.', url: 'https://github.com/fictional/repo/pull/8#c2', createdAt: '2024-05-02T00:00:00Z' },
+        ] } }, {}];
+      return JSON.stringify({ data: { search: { pageInfo: { hasNextPage: false, endCursor: null }, nodes } } });
+    }
+    return JSON.stringify({ body: 'Adds retry to the uploader.\n\n🤖 Generated with [Claude Code](https://claude.com/claude-code)', source: 'https://github.com/fictional/repo/pull/7', at: '2024-02-01T00:00:00Z' }) + '\n'
+      + JSON.stringify({ body: 'Retries the upload three times before giving up, because the storage service drops one request in fifty.', source: 'https://github.com/fictional/repo/pull/6', at: '2024-01-01T00:00:00Z' }) + '\n';
   };
-  const result = await collectSamples(store, { run, repos: ['fictional/repo'], before: '2025-01-01' });
-  assert.deepEqual(result.saved, { 'pr-comment': 1, 'pr-description': 0 });
-  assert.ok(queries.every(q => q.includes('repo:fictional/repo') && q.includes('created:<2025-01-01')));
-  assert.ok(queries.some(q => q.includes('commenter:fictional-user')) && queries.some(q => q.includes('author:fictional-user')));
-  assert.match(samples(store)[0].body, /Guard it before reading/);
-  await collectSamples(store, { run, repos: ['fictional/repo'] });
-  assert.equal(samples(store).length, 2);
+  return { run, calls };
+};
+
+test('collecting keeps only the user’s own usable writing, honours scope and cutoff, uses a few bulk reads, and replaces earlier samples', async t => {
+  const store = createStore(path.join(temp(t), 'voice'));
+  const github = fakeGitHub();
+  const result = await collectSamples(store, { run: github.run, repos: ['fictional/repo'], before: '2025-01-01' });
+  assert.deepEqual(result.saved, { 'pr-comment': 2, 'pr-description': 1 });
+  assert.deepEqual(result.failed, []);
+  assert.ok(github.calls.length <= 8, `${github.calls.length} calls`);
+  const search = github.calls.find(args => args.includes('search/issues')).find(a => a.startsWith('q='));
+  assert.ok(search.includes('author:fictional-user') && search.includes('repo:fictional/repo') && search.includes('created:<2025-01-01'));
+  assert.deepEqual(samples(store).map(s => s.body.slice(0, 20)).sort(), ['I would split this i', 'Retries the upload t', 'This throws when the']);
+  const wider = await collectSamples(store, { run: fakeGitHub().run });
+  assert.deepEqual(wider.saved, { 'pr-comment': 4, 'pr-description': 1 });
   assert.equal(spawnSync('git', ['-C', store.root, 'status', '--porcelain'], { encoding: 'utf8' }).stdout, '');
+});
+
+test('one source failing is reported and the rest still count; all failing is an error', async t => {
+  const store = createStore(path.join(temp(t), 'voice'));
+  const partial = await collectSamples(store, { run: fakeGitHub({ fail: what => what === 'comments' }).run });
+  assert.deepEqual(partial.saved, { 'pr-comment': 0, 'pr-description': 1 });
+  assert.match(partial.failed.join(), /review and conversation comments: GitHub did not answer in time/);
+  await assert.rejects(collectSamples(store, { run: fakeGitHub({ fail: what => what !== 'user' }).run }), /could not be read from GitHub/);
 });
 
 test('several logged versions for one spot pair once; the others close as superseded', async t => {
@@ -135,3 +161,4 @@ test('a writing sample becomes evidence only once sanitized, and the offer to se
   assert.doesNotMatch(h.run(['hook', 'session-start']).stdout, /samples of the user's past writing/);
   assert.match(h.run(['seed', '--print']).stdout, /Seed: a first voice guide from past writing/);
 });
+

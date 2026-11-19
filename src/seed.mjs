@@ -1,5 +1,5 @@
 import { replaceSamples } from './records.mjs';
-import { currentLogin, publishedOnPull, pullsInvolving } from './sources/github.mjs';
+import { commentWriting, currentLogin, descriptionWriting } from './sources/github.mjs';
 
 /** Signs that an agent or a bot wrote the text. Seeding from these would teach the guide someone else's voice. */
 const GENERATED = [/generated with \[?claude code/i, /co-authored-by:\s*(claude|codex|copilot|cursor)/i, /🤖/u, /<!--[\s\S]*?-->/, /this stack of pull requests is managed by/i,
@@ -18,28 +18,28 @@ export function spread(items, limit) {
 
 /**
  * Gathers the user's own past writing from GitHub into the local cache, replacing earlier samples.
+ * Uses a few bulk queries. A source that fails is reported and the others still count.
  * @param {import('./store.mjs').Store} store
- * @param {{run: import('./sources/github.mjs').Run, repos?: string[], before?: string, comments?: number, descriptions?: number, maxPulls?: number}} options
+ * @param {{run: import('./sources/github.mjs').Run, repos?: string[], before?: string, comments?: number, descriptions?: number}} options
  */
-export async function collectSamples(store, { run, repos = [], before, comments = 150, descriptions = 30, maxPulls = 60 }) {
+export async function collectSamples(store, { run, repos = [], before, comments = 150, descriptions = 30 }) {
   const login = await currentLogin(run);
-  const [commented, authored] = await Promise.all([
-    pullsInvolving(run, { login, role: 'commenter', repos, before }),
-    pullsInvolving(run, { login, role: 'author', repos, before }),
-  ]);
-  const pulls = new Map([...commented.slice(0, maxPulls), ...authored.slice(0, Math.ceil(maxPulls / 2))].map(pr => [`${pr.owner}/${pr.repo}#${pr.number}`, pr]));
-  /** @type {{kind: string, body: string, source: string, at?: string}[]} */
+  const sources = { 'review and conversation comments': () => commentWriting(run, { login, repos, before }), 'PR descriptions': () => descriptionWriting(run, { login, repos, before }) };
+  /** @type {import('./sources/github.mjs').Published[]} */
   const published = [];
-  const queue = [...pulls.values()];
-  await Promise.all(Array.from({ length: 4 }, async () => { for (let pr = queue.shift(); pr; pr = queue.shift()) published.push(...await publishedOnPull(run, pr, login)); }));
+  /** @type {string[]} */
+  const failed = [];
+  for (const [name, read] of Object.entries(sources)) { try { published.push(...await read()); } catch (error) { failed.push(`${name}: ${/** @type {Error} */ (error).message.split('\n')[0]}`); } }
+  if (failed.length === Object.keys(sources).length) throw new Error(`Your writing could not be read from GitHub. ${failed[0]}`);
+  const inScope = (/** @type {string} */ source) => !repos.length || repos.some(repo => source.toLowerCase().startsWith(`https://github.com/${repo.toLowerCase()}/`));
   const seen = new Set();
   const usable = published.filter(item => {
     const key = item.body.trim().toLowerCase().replace(/\s+/g, ' ');
-    if (seen.has(key) || !isUsable(item.body) || (before && item.at && item.at.slice(0, 10) >= before)) return false;
+    if (seen.has(key) || !inScope(item.source) || !isUsable(item.body) || (before && item.at && item.at.slice(0, 10) >= before)) return false;
     seen.add(key); return true;
   });
   const chosen = [...spread(usable.filter(item => item.kind === 'pr-comment'), comments), ...spread(usable.filter(item => item.kind === 'pr-description'), descriptions)];
   const saved = replaceSamples(store, chosen);
-  return { login, pullRequests: pulls.size, found: published.length, skipped: published.length - usable.length,
+  return { login, found: published.length, skipped: published.length - usable.length, failed,
     saved: { 'pr-comment': saved.filter(s => s.kind === 'pr-comment').length, 'pr-description': saved.filter(s => s.kind === 'pr-description').length } };
 }
