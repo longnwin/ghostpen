@@ -86,10 +86,13 @@ try {
       if (!io) return question.fallback;
       console.log(`\n${question.text}`);
       (question.choices || []).forEach((choice, index) => console.log(`  ${index + 1}. ${choice.label}`));
-      const hint = question.choices ? (question.many ? 'numbers separated by commas, Enter for all' : 'number, Enter for 1') : (question.fallback ? `Enter for ${question.fallback}` : 'Enter to skip');
+      const fallbackIndex = (question.choices || []).findIndex(choice => choice.value === question.fallback);
+      const hint = question.choices ? (question.many ? 'numbers separated by commas, Enter for all' : fallbackIndex >= 0 ? `number, Enter for ${fallbackIndex + 1}` : question.allowText ? 'number, or type it' : 'number')
+        : (question.fallback ? `Enter for ${question.fallback}` : 'Enter to skip');
       const answer = (await io.question(`(${hint}) > `)).trim();
-      if (!answer) return question.choices && !question.many ? question.choices[0].value : question.fallback;
+      if (!answer) return question.fallback;
       if (!question.choices) return answer;
+      if (question.allowText && !/^[\d,\s]+$/.test(answer)) return answer;
       const picked = answer.split(',').map(part => question.choices?.[Number(part.trim()) - 1]?.value).filter(Boolean);
       if (!picked.length) throw new Error('That is not one of the options.');
       return question.many ? picked.join(',') : String(picked[0]);

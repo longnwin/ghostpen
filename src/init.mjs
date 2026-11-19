@@ -13,7 +13,7 @@ const PACKAGE = fileURLToPath(new URL('..', import.meta.url));
 
 /**
  * One question to the user. `choices` makes it a pick-one (or pick-many with `many`); otherwise free text.
- * @typedef {(question: {id: string, text: string, choices?: {value: string, label: string}[], many?: boolean, fallback: string}) => Promise<string>} Ask
+ * @typedef {(question: {id: string, text: string, choices?: {value: string, label: string}[], many?: boolean, allowText?: boolean, fallback: string}) => Promise<string>} Ask
  */
 
 /** Copies ghostpen somewhere that outlives `npx`, so hooks, skills and schedules have a stable command to call. */
@@ -87,11 +87,20 @@ export async function init({ ask, from, log = console.log }) {
   const options = schedulers.filter(item => item.available());
   const scheduleId = await ask({ id: 'schedule', text: 'How should voice updates be prepared? They are always proposed for your approval, never applied on their own.',
     choices: options.map(item => ({ value: item.id, label: `${item.label}. ${item.note}` })), fallback: 'session' });
-  const state = schedulerById(scheduleId).install({ command, prompt: distilPrompt(app, command), store: store.root });
-  log(`Schedule: ${schedulerById(scheduleId).label}.`);
+  // Everything above is recorded first, so a schedule that fails to set up never leaves an install that doctor and uninstall cannot see.
+  writeConfig({ store: store.root, app, command, agents: wired, instructions, schedule: { id: 'session', state: {} } });
+  let schedule = { id: scheduleId, state: /** @type {Record<string, string>} */ ({}) };
+  try {
+    schedule.state = await schedulerById(scheduleId).install({ command, store: store.root, ask,
+      prompt: `Update my voice guide from recent edits: run \`${command} distil --print\` and follow the instructions it prints exactly. Do not publish, post or push anything.` });
+  } catch (error) {
+    log(`Could not set up "${schedulerById(scheduleId).label}": ${/** @type {Error} */ (error).message}. Using "ask me at the start of a session" for now; run init again to change it.`);
+    schedule = { id: 'session', state: {} };
+  }
+  log(`Schedule: ${schedulerById(schedule.id).label}.`);
 
-  writeConfig({ store: store.root, app, command, agents: wired, instructions, schedule: { id: scheduleId, state } });
-  return { store: store.root, agents: wired, instructions, schedule: scheduleId, manual };
+  writeConfig({ schedule });
+  return { store: store.root, agents: wired, instructions, schedule: schedule.id, manual };
 }
 
 /** Checks that everything init set up is still in place. */

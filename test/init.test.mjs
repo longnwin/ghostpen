@@ -114,3 +114,37 @@ test('a proposal changes the guide only when accepted, is announced at session s
   assert.equal(h.run(['proposals', 'reject', second]).status, 0);
   assert.match(fs.readFileSync(guide, 'utf8'), /A rule I typed myself/);
 });
+
+test('a schedule that cannot be set up falls back without losing the install; Paseo is given the chosen agent and a short prompt', t => {
+  const h = fakeHome(t);
+  const bin = path.join(h.home, 'bin'), calls = path.join(h.home, 'paseo-calls.log');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'paseo'), `#!/bin/sh
+printf '%s\\n' "$*" >> ${calls}
+case "$1 $2" in
+  "--version "*) exit 0 ;;
+  "provider ls") echo '[{"provider":"claude","label":"Claude","status":"available"},{"provider":"other","label":"Other","status":"unavailable"}]' ;;
+  "schedule create") case "$*" in *"--provider claude"*) echo '{"id":"sch_1"}' ;; *) echo '{"error":{"message":"Provider is required"}}'; exit 1 ;; esac ;;
+  "schedule delete") exit 0 ;;
+esac
+`, { mode: 0o755 });
+  const withPaseo = (args) => spawnSync(process.execPath, [CLI, ...args], { encoding: 'utf8', env: { PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`, HOME: h.home, GHOSTPEN_HOME: h.home,
+    GHOSTPEN_CONFIG_DIR: path.join(h.home, '.config'), GHOSTPEN_DATA_DIR: path.join(h.home, '.local', 'share', 'ghostpen'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.test', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.test' } });
+  const config = () => JSON.parse(fs.readFileSync(path.join(h.home, '.config', 'ghostpen', 'config.json'), 'utf8'));
+
+  const missing = withPaseo(['init', '--yes', '--remote', '', '--schedule', 'paseo']);
+  assert.equal(missing.status, 0, missing.stderr);
+  assert.match(missing.stdout, /Could not set up "Paseo schedule, daily": a Paseo schedule needs an agent to run as/);
+  assert.doesNotMatch(missing.stdout + missing.stderr, /Distil: turn edits into voice rules/);
+  assert.equal(config().schedule.id, 'session');
+  assert.equal(withPaseo(['doctor']).status, 0);
+
+  const chosen = withPaseo(['init', '--yes', '--remote', '', '--schedule', 'paseo', '--provider', 'claude']);
+  assert.equal(chosen.status, 0, chosen.stderr);
+  assert.deepEqual(config().schedule, { id: 'paseo', state: { id: 'sch_1' } });
+  const created = fs.readFileSync(calls, 'utf8').split('\n').filter(line => line.startsWith('schedule create')).at(-1);
+  assert.match(created, /--provider claude --json Update my voice guide from recent edits: run .* distil --print/);
+  assert.ok(created.length < 600);
+  assert.equal(withPaseo(['uninstall']).status, 0);
+  assert.match(fs.readFileSync(calls, 'utf8'), /schedule delete sch_1/);
+});
