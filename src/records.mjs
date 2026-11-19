@@ -47,7 +47,8 @@ export const KINDS = ['pr-comment', 'pr-description', 'commit-message', 'issue',
  */
 
 const dirFor = (/** @type {import('./store.mjs').Store} */ store, /** @type {'drafts'|'pairs'} */ name) => path.join(store.cache, name);
-const write = (/** @type {string} */ dir, /** @type {{id: string}} */ record) => {
+/** @template {{id: string}} T @param {string} dir @param {T} record @returns {T} */
+const write = (dir, record) => {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
   fs.writeFileSync(path.join(dir, `${record.id}.json`), JSON.stringify(record, null, 2) + '\n', { mode: 0o600 });
   return record;
