@@ -28,7 +28,7 @@ DRAFT
 - `--target` is the URL it will be published at when you know it (for a pull request, the pull request URL), otherwise a few words.
 - For a comment on a line of code, add `--path <file> --line <n>`.
 
-Log the text once, as first drafted. Do not log later revisions of the same piece, and do not log text the user wrote themselves.
+Log each version you hand to the user, including a redraft they asked for. Do not log your own intermediate attempts, and do not log text the user wrote themselves.
 
 ## Boundaries
 

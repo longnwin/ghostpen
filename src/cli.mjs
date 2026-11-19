@@ -3,7 +3,10 @@ import fs from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { readConfig, writeConfig } from './config.mjs';
 import { commit, createStore, storeAt } from './store.mjs';
-import { RECORD_VERSION, addPair, drafts, evidence, logDraft, pairs, removePair, saveEvidence } from './records.mjs';
+import { RECORD_VERSION, addPair, drafts, evidence, logDraft, pairs, removePair, samples, saveEvidence } from './records.mjs';
+import fsp from 'node:path';
+import { collectSamples } from './seed.mjs';
+import { apply, candidates, dismiss, pending, preview, propose } from './integrate.mjs';
 import { similarity } from './match.mjs';
 import { leakedSpecifics } from './leaks.mjs';
 import { matchGitHub } from './capture.mjs';
@@ -11,7 +14,7 @@ import { ghRunner } from './sources/github.mjs';
 import readline from 'node:readline/promises';
 import { spawnSync } from 'node:child_process';
 import { addProposal, acceptProposal, proposals, rejectProposal } from './proposals.mjs';
-import { distilPrompt, doctor, init, uninstall } from './init.mjs';
+import { distilPrompt, doctor, init, instructionsPrompt, uninstall } from './init.mjs';
 
 const [command, ...args] = process.argv.slice(2);
 const flag = (/** @type {string} */ name) => args.includes(`--${name}`);
@@ -23,6 +26,14 @@ const store = () => {
   const root = option('store') || process.env.GHOSTPEN_STORE || readConfig().store;
   if (!root) throw new Error('No voice store is set up on this machine. Run `ghostpen init` first.');
   return storeAt(root);
+};
+
+/** Runs one set of instructions with the user's own agent, headlessly, in the voice store. */
+const runAgent = (/** @type {any} */ config, /** @type {string} */ prompt) => {
+  const agent = (config.agents || [])[0]?.id;
+  const run = agent === 'codex' ? spawnSync('codex', ['exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-C', store().root, prompt], { stdio: 'inherit' })
+    : spawnSync('claude', ['-p', prompt, '--allowedTools', 'Read,Write,Bash'], { stdio: 'inherit', cwd: store().root });
+  return run.status ?? 1;
 };
 
 const HELP = `ghostpen — teaches your coding agents to write like you.
@@ -38,6 +49,15 @@ const HELP = `ghostpen — teaches your coding agents to write like you.
   ghostpen evidence add --pair <id> --before <path> --after <path>
                                      Save the sanitized version of a pair into the store
   ghostpen evidence list             Print all sanitized evidence
+  ghostpen evidence add-sample --sample <id> --text <path>
+                                     Save the sanitized version of one writing sample
+  ghostpen seed collect [--repo <owner/repo,...>] [--before <YYYY-MM-DD>]
+                                     Gather your own past writing from GitHub (stays on this machine)
+  ghostpen seed [samples | --print | --run]
+                                     List the samples, or print / run the steps that turn them into a first guide
+  ghostpen integrate [candidates | review | apply <id> | dismiss <id> | --print | --run]
+                                     Add the voice step to your own skills that write text for you
+  ghostpen integrate propose --file <path> --after-line <n> --kind <kind> --note <text>
   ghostpen distil [--print | --run]  Print the distil instructions, or run them with your agent headlessly
   ghostpen proposals [show <id> | accept <id> | reject <id>]
                                      Review proposed changes to your voice guide
@@ -74,6 +94,35 @@ try {
     saveEvidence(target, { id: randomUUID(), version: RECORD_VERSION, kind: pair.kind, before, after, source: pair.source, similarity: pair.similarity, recordedAt: new Date().toISOString() });
     removePair(target, pair.id); commit(target, `Add ${pair.kind} evidence`);
     print({ saved: true });
+  } else if (command === 'evidence' && args[0] === 'add-sample') {
+    const target = store(), sample = samples(target).find(item => item.id === required('sample'));
+    if (!sample) throw new Error('No sample has that id.');
+    const text = readText(required('text')).trim();
+    const leaks = leakedSpecifics([sample.body], [text]);
+    if (leaks.length && !flag('allow-specifics')) throw new Error(`The sanitized text still contains specifics from the original: ${leaks.slice(0, 12).join(', ')}. Rewrite them, or pass --allow-specifics if they are generic.`);
+    const saved = saveEvidence(target, { id: randomUUID(), version: RECORD_VERSION, kind: sample.kind, before: '', after: text, source: sample.source, similarity: 0, recordedAt: new Date().toISOString(), origin: 'sample' });
+    commit(target, `Add ${sample.kind} sample evidence`);
+    print({ id: saved.id });
+  } else if (command === 'seed' && args[0] === 'collect') {
+    const result = await collectSamples(store(), { run: ghRunner(), repos: (option('repo') || '').split(',').map(r => r.trim()).filter(Boolean), before: option('before') });
+    writeConfig({ seed: 'collected' }); print(result);
+  } else if (command === 'seed' && args[0] === 'samples') {
+    print(samples(store()));
+  } else if (command === 'seed' || (command === 'integrate' && (!args[0] || args[0].startsWith('--')))) {
+    const config = /** @type {any} */ (readConfig());
+    if (!config.app) throw new Error('Run `ghostpen init` first.');
+    const prompt = instructionsPrompt(config.app, config.command, command);
+    if (!flag('run')) print(prompt); else process.exitCode = runAgent(config, prompt);
+  } else if (command === 'integrate') {
+    const config = /** @type {any} */ (readConfig());
+    if (!config.command) throw new Error('Run `ghostpen init` first.');
+    const dirs = (config.agents || []).map((/** @type {{skill: string}} */ agent) => fsp.dirname(agent.skill));
+    if (args[0] === 'candidates') print(candidates(dirs));
+    else if (args[0] === 'propose') print(propose({ file: required('file'), afterLine: Number(required('after-line')), kind: required('kind'), note: required('note') }, dirs));
+    else if (args[0] === 'review') { const list = pending(); print(list.length ? list.map(item => preview(item, config.command)).join('\n\n') : 'No integrations are waiting.'); }
+    else if (args[0] === 'apply') { const file = apply(args[1] || '', config.command); writeConfig({ integrations: [...new Set([...(config.integrations || []), file])], integrate: 'done' }); print(`Added the voice step to ${file}. The change is not committed.`); }
+    else if (args[0] === 'dismiss') { dismiss(args[1] || ''); print('Dismissed.'); }
+    else throw new Error('Use: ghostpen integrate [candidates | propose | review | apply <id> | dismiss <id> | --print | --run]');
   } else if (command === 'evidence' && args[0] === 'list') {
     print(evidence(store()));
   } else if (command === 'init') {
@@ -113,13 +162,7 @@ try {
     const config = /** @type {any} */ (readConfig());
     if (!config.app) throw new Error('Run `ghostpen init` first.');
     const prompt = distilPrompt(config.app, config.command);
-    if (!flag('run')) print(prompt);
-    else {
-      const agent = (config.agents || [])[0]?.id;
-      const run = agent === 'codex' ? spawnSync('codex', ['exec', '--sandbox', 'workspace-write', '--skip-git-repo-check', '-C', store().root, prompt], { stdio: 'inherit' })
-        : spawnSync('claude', ['-p', prompt, '--allowedTools', 'Read,Write,Bash'], { stdio: 'inherit', cwd: store().root });
-      process.exitCode = run.status ?? 1;
-    }
+    if (!flag('run')) print(prompt); else process.exitCode = runAgent(config, prompt);
   } else if (command === 'proposals') {
     const target = store();
     if (args[0] === 'add') print({ id: addProposal(target, { summary: required('summary'), guide: readText(required('guide')), evidence: (option('evidence') || '').split(',').map(id => id.trim()).filter(Boolean) }).id });
@@ -133,6 +176,11 @@ try {
       const target = store(), waiting = proposals(target).length, raw = pairs(target).length, config = /** @type {any} */ (readConfig());
       const lines = [`ghostpen: before writing anything that will be posted or sent under the user's name, read ${target.guide} and follow it, and log the draft as the ghostpen skill describes.`];
       if (waiting) lines.push(`${waiting} proposed change${waiting === 1 ? '' : 's'} to the user's voice guide ${waiting === 1 ? 'is' : 'are'} waiting. Early in this session, ask the user whether to review ${waiting === 1 ? 'it' : 'them'} (\`${config.command} proposals\`).`);
+      const seeded = evidence(target).some(item => item.origin === 'sample'), sampleCount = seeded || waiting ? 0 : samples(target).length;
+      if (sampleCount) lines.push(`${sampleCount} samples of the user's past writing are ready. Early in this session, ask the user whether to build their first voice guide from them now (\`${config.command} seed --print\` gives the steps).`);
+      if (config.integrate === 'wanted') lines.push(`The user asked to have their own skills checked for places that write text for them. Early in this session, ask whether to do that now (\`${config.command} integrate --print\` gives the steps).`);
+      if (pending().length) lines.push(`${pending().length} proposed skill change${pending().length === 1 ? ' is' : 's are'} waiting for the user's decision (\`${config.command} integrate review\`).`);
+      if (waiting) { /* said above */ }
       else if (raw >= 5 && config.schedule?.id === 'session') lines.push(`${raw} of the user's edits have not been learned from yet. Early in this session, ask the user whether to update their voice guide now (\`${config.command} distil --print\` gives the steps).`);
       console.log(lines.join('\n'));
     } catch { /* not set up, or store missing: say nothing */ }

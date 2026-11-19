@@ -33,6 +33,10 @@ export async function matchGitHub(store, { run, giveUpDays = 14, now = Date.now(
         saveDraft(store, { ...match.draft, status: 'paired' }); matched.add(match.draft.id); result.paired += 1;
       }
     }
+    // An agent may log several versions for one spot; once one is paired, the rest are not separate drafts.
+    const spot = (/** @type {typeof items[number]} */ draft) => [draft.kind, draft.path || '', draft.line ?? ''].join('|');
+    const pairedSpots = new Set(items.filter(draft => matched.has(draft.id) && draft.path).map(spot));
+    for (const draft of items) if (!matched.has(draft.id) && draft.path && pairedSpots.has(spot(draft))) { saveDraft(store, { ...draft, status: 'superseded' }); matched.add(draft.id); }
     for (const draft of items) if (!matched.has(draft.id)) {
       if (now - Date.parse(draft.createdAt) > giveUpDays * DAY) { saveDraft(store, { ...draft, status: 'unposted' }); result.unposted += 1; }
       else result.waiting += 1;

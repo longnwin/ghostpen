@@ -8,6 +8,9 @@ import { createStore, storeAt } from './store.mjs';
 import { hasHook, installHook, installSkill, knownAgents, removeHook, removeSkill } from './agents.mjs';
 import { addVoiceLine, instructionHomes, removeVoiceLine } from './instructions.mjs';
 import { schedulerById, schedulers } from './schedulers.mjs';
+import { clearPending, hasStep, removeStep } from './integrate.mjs';
+import { collectSamples } from './seed.mjs';
+import { ghRunner } from './sources/github.mjs';
 
 const PACKAGE = fileURLToPath(new URL('..', import.meta.url));
 
@@ -26,8 +29,11 @@ function installApp() {
   return { app, command: `${quote(process.execPath)} ${quote(path.join(app, 'src', 'cli.mjs'))}` };
 }
 
-export const distilPrompt = (/** @type {string} */ app, /** @type {string} */ command) =>
-  `Update my voice guide from recent edits. Follow these instructions exactly:\n\n${fs.readFileSync(path.join(app, 'docs', 'distil.md'), 'utf8').replaceAll('{{GHOSTPEN}}', command)}`;
+const LEADS = { distil: 'Update my voice guide from recent edits.', seed: 'Build my first voice guide from my past writing.', integrate: 'Find where my own skills write text for me, and propose adding the voice step there.' };
+/** The instructions for one agent-run job, with this machine's ghostpen command filled in. @param {string} app @param {string} command @param {string} job */
+export const instructionsPrompt = (app, command, job) =>
+  `${LEADS[/** @type {keyof typeof LEADS} */ (job)]} Follow these instructions exactly:\n\n${fs.readFileSync(path.join(app, 'docs', `${job}.md`), 'utf8').replaceAll('{{GHOSTPEN}}', command)}`;
+export const distilPrompt = (/** @type {string} */ app, /** @type {string} */ command) => instructionsPrompt(app, command, 'distil');
 
 /** @param {{ask: Ask, from?: string, log?: (line: string) => void}} options */
 export async function init({ ask, from, log = console.log }) {
@@ -100,6 +106,27 @@ export async function init({ ask, from, log = console.log }) {
   log(`Schedule: ${schedulerById(schedule.id).label}.`);
 
   writeConfig({ schedule });
+
+  // 7. A first guide from past writing. Collecting is plain code; turning samples into rules needs the user's agent.
+  const guideIsEmpty = fs.readFileSync(store.guide, 'utf8').includes('_No rules yet.');
+  if (guideIsEmpty && spawnSync('gh', ['auth', 'status'], { stdio: 'ignore' }).status === 0) {
+    const scope = (await ask({ id: 'seed', text: 'Build a first guide from what you have already written on GitHub (review comments and PR descriptions)? Text written by agents is skipped, and samples stay on this machine.',
+      choices: [{ value: 'all', label: 'Yes, from everything I have written' }, { value: 'none', label: 'No, start empty and learn from my edits' }], allowText: true, fallback: 'none' })).trim();
+    if (scope && scope !== 'none') {
+      const before = (await ask({ id: 'seed-before', text: 'Only use writing from before a date? Useful if agents have drafted for you recently. Type YYYY-MM-DD, or leave empty for no cutoff.', fallback: '' })).trim();
+      try {
+        const result = await collectSamples(store, { run: ghRunner(), repos: scope === 'all' ? [] : scope.split(',').map(r => r.trim()).filter(Boolean), before: before || undefined });
+        writeConfig({ seed: 'collected' });
+        log(`Collected ${result.saved['pr-comment']} review comments and ${result.saved['pr-description']} PR descriptions. Your agent will offer to build the guide from them at the start of your next session, or run \`${command} seed --run\` now.`);
+      } catch (error) { log(`Could not collect past writing: ${/** @type {Error} */ (error).message}. You can try again with \`${command} seed collect\`.`); }
+    }
+  }
+
+  // 8. The user's own skills that write for them.
+  const wantsIntegrate = await ask({ id: 'integrate', text: 'Look through your own skills for places that write text for you, and propose adding the voice step there? Nothing is changed without your approval.',
+    choices: [{ value: 'yes', label: 'Yes, at the start of my next session' }, { value: 'no', label: 'No' }], fallback: 'no' });
+  if (wantsIntegrate === 'yes') { writeConfig({ integrate: 'wanted' }); log('Your agent will offer to check your skills at the start of your next session.'); }
+
   return { store: store.root, agents: wired, instructions, schedule: schedule.id, manual };
 }
 
@@ -113,6 +140,7 @@ export function doctor() {
     checks.push({ ok: hasHook(agent.hooksFile), item: `${agent.name} session hook`, detail: agent.hooksFile });
   }
   for (const file of config.instructions || []) checks.push({ ok: (() => { try { return fs.readFileSync(file, 'utf8').includes('ghostpen:start'); } catch { return false; } })(), item: 'Voice line', detail: file });
+  for (const file of config.integrations || []) checks.push({ ok: hasStep(file), item: 'Voice step in skill', detail: file });
   checks.push({ ok: fs.existsSync(path.join(config.app || '', 'src', 'cli.mjs')), item: 'ghostpen command', detail: config.command || '' });
   checks.push({ ok: Boolean(config.schedule?.id), item: 'Schedule', detail: config.schedule?.id || 'none' });
   return checks;
@@ -123,6 +151,8 @@ export function uninstall() {
   const config = /** @type {any} */ (readConfig());
   for (const agent of config.agents || []) { removeSkill(agent.skill); removeHook(agent.hooksFile); }
   for (const file of config.instructions || []) removeVoiceLine(file);
+  for (const file of config.integrations || []) removeStep(file);
+  clearPending();
   if (config.schedule?.id) { try { schedulerById(config.schedule.id).remove(config.schedule.state || {}); } catch { /* already gone */ } }
   if (config.app && config.app.startsWith(dataDir())) fs.rmSync(config.app, { recursive: true, force: true });
   fs.rmSync(configPath(), { force: true });

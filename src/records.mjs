@@ -17,7 +17,7 @@ export const KINDS = ['pr-comment', 'pr-description', 'commit-message', 'issue',
  * @property {string} [path]
  * @property {number} [line]
  * @property {string} createdAt
- * @property {'open'|'paired'|'unposted'} status
+ * @property {'open'|'paired'|'unposted'|'superseded'} status
  */
 
 /**
@@ -44,9 +44,15 @@ export const KINDS = ['pr-comment', 'pr-description', 'commit-message', 'issue',
  * @property {string} source
  * @property {number} similarity
  * @property {string} recordedAt
+ * @property {'edit'|'sample'} [origin]  `sample` is the user's own past writing, with no draft before it
  */
 
-const dirFor = (/** @type {import('./store.mjs').Store} */ store, /** @type {'drafts'|'pairs'} */ name) => path.join(store.cache, name);
+/**
+ * A piece of the user's own past writing, used to seed the guide. Raw text, local only.
+ * @typedef {{id: string, version: number, kind: string, body: string, source: string, at: string}} Sample
+ */
+
+const dirFor = (/** @type {import('./store.mjs').Store} */ store, /** @type {'drafts'|'pairs'|'samples'} */ name) => path.join(store.cache, name);
 /** @template {{id: string}} T @param {string} dir @param {T} record @returns {T} */
 const write = (dir, record) => {
   fs.mkdirSync(dir, { recursive: true, mode: 0o700 });
@@ -89,3 +95,11 @@ export function saveEvidence(store, record) {
   fs.writeFileSync(path.join(store.evidence, `${record.id}.json`), JSON.stringify(record, null, 2) + '\n');
   return record;
 }
+
+/** @param {import('./store.mjs').Store} store @param {{kind: string, body: string, source: string, at?: string}[]} items @returns {Sample[]} */
+export function replaceSamples(store, items) {
+  fs.rmSync(dirFor(store, 'samples'), { recursive: true, force: true });
+  return items.map(item => write(dirFor(store, 'samples'), { id: randomUUID(), version: RECORD_VERSION, kind: kindOf(item.kind), body: textOf(item.body, 'Sample'), source: item.source, at: item.at || '' }));
+}
+/** @param {import('./store.mjs').Store} store @returns {Sample[]} */
+export const samples = store => readAll(dirFor(store, 'samples'));
