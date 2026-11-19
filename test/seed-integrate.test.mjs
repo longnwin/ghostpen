@@ -79,6 +79,7 @@ function installed(t) {
   const skill = (name, files) => { for (const [file, text] of Object.entries(files)) { fs.mkdirSync(path.dirname(path.join(skills, name, file)), { recursive: true }); fs.writeFileSync(path.join(skills, name, file), text); } };
   skill('ship', { 'SKILL.md': '---\nname: ship\n---\n\n# Ship\n\n1. Run the tests.\n2. Write the PR description from the diff.\n3. Push.\n' });
   skill('review-tool', { 'SKILL.md': '---\nname: review-tool\n---\n\nOpens a workspace.\n', 'references/worker.md': '# Worker\n\n## Draft a PR comment\n\nWrite it as the user would.\n\n## Other\n\nNothing.\n' });
+  skill('synced', { 'abc/notes/SKILL.md': '---\nname: notes\n---\n\nWrite the PR description for the user.\n' });
   skill('lint', { 'SKILL.md': '---\nname: lint\n---\n\nRun the linter and report results to the user.\n' });
   const env = { PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`, HOME: home, GHOSTPEN_HOME: home, GHOSTPEN_CONFIG_DIR: path.join(home, '.config'), GHOSTPEN_DATA_DIR: path.join(home, '.local', 'share', 'ghostpen'),
     GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.test', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.test' };

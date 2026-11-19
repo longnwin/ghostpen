@@ -42,7 +42,8 @@ export function candidates(skillsDirs) {
   const result = [];
   for (const root of roots) for (const entry of fs.readdirSync(root, { withFileTypes: true })) {
     const skillDir = path.join(root, entry.name);
-    if (entry.name.startsWith('.') || entry.name.startsWith('_') || !fs.statSync(skillDir).isDirectory() || fs.existsSync(path.join(skillDir, '.ghostpen-skill'))) continue;
+    // 'synced' holds skills an agent syncs from the user's account; they are replaced on sync, so they are not the user's to edit here.
+    if (entry.name === 'synced' || entry.name.startsWith('.') || entry.name.startsWith('_') || !fs.statSync(skillDir).isDirectory() || fs.existsSync(path.join(skillDir, '.ghostpen-skill'))) continue;
     for (const file of markdownFiles(skillDir)) {
       const text = fs.readFileSync(file, 'utf8');
       const hits = text.split('\n').map((line, index) => ({ line: index + 1, text: line.trim().slice(0, 160) })).filter(row => WRITES.test(row.text));
