@@ -39,7 +39,7 @@ const runAgent = (/** @type {any} */ config, /** @type {string} */ prompt) => {
 /** Applies one proposed skill change and records it, so doctor and uninstall know about it. */
 const applyOne = (/** @type {string} */ id) => {
   const config = /** @type {any} */ (readConfig());
-  const file = apply(id, config.command);
+  const file = apply(id, said(config));
   writeConfig({ integrations: [...new Set([...(config.integrations || []), file])], integrate: 'done' });
   return file;
 };
@@ -47,12 +47,12 @@ const applyOne = (/** @type {string} */ id) => {
 async function decide(/** @type {any} */ config) {
   const list = pending();
   if (!list.length) return print('No skill changes are waiting.');
-  if (!process.stdin.isTTY) return print(`${list.map(item => preview(item, config.command)).join('\n\n')}\n\n${list.length} skill change${list.length === 1 ? ' is' : 's are'} waiting. Run \`ghostpen integrate decide\` in a terminal, or apply one with \`ghostpen integrate apply <id>\`.`);
+  if (!process.stdin.isTTY) return print(`${list.map(item => preview(item, said(config))).join('\n\n')}\n\n${list.length} skill change${list.length === 1 ? ' is' : 's are'} waiting. Run \`ghostpen integrate decide\` in a terminal, or apply one with \`ghostpen integrate apply <id>\`.`);
   const io = readline.createInterface({ input: process.stdin, output: process.stdout });
   const changed = [];
   try {
     for (const [index, item] of list.entries()) {
-      console.log(`\n(${index + 1} of ${list.length})\n${preview(item, config.command)}`);
+      console.log(`\n(${index + 1} of ${list.length})\n${preview(item, said(config))}`);
       const answer = (await io.question('Add this step? [y] yes  [n] no, discard  [s] skip for now > ')).trim().toLowerCase();
       if (answer === 'y' || answer === 'yes') changed.push(applyOne(item.id));
       else if (answer === 'n' || answer === 'no') dismiss(item.id);
@@ -61,6 +61,9 @@ async function decide(/** @type {any} */ config) {
   writeConfig({ integrate: 'done' });
   console.log(changed.length ? `\nChanged, not committed:\n${changed.map(file => `  ${file}`).join('\n')}` : '\nNo files were changed.');
 }
+
+/** The command as it should appear in text an agent reads. */
+const said = (/** @type {any} */ config) => config.say || config.command;
 
 const HELP = `ghostpen — teaches your coding agents to write like you.
 
@@ -137,7 +140,7 @@ try {
   } else if (command === 'seed' || (command === 'integrate' && (!args[0] || args[0].startsWith('--')))) {
     const config = /** @type {any} */ (readConfig());
     if (!config.app) throw new Error('Run `ghostpen init` first.');
-    const prompt = instructionsPrompt(config.app, config.command, command);
+    const prompt = instructionsPrompt(config.app, said(config), command);
     if (!flag('run')) print(prompt);
     else {
       // A headless agent cannot wait for an answer, so it only finds and proposes; the questions are asked here.
@@ -152,7 +155,7 @@ try {
     const dirs = (config.agents || []).map((/** @type {{skill: string}} */ agent) => fsp.dirname(agent.skill));
     if (args[0] === 'candidates') print(candidates(dirs));
     else if (args[0] === 'propose') print(propose({ file: required('file'), afterLine: Number(required('after-line')), kind: required('kind'), note: required('note') }, dirs));
-    else if (args[0] === 'review') { const list = pending(); print(list.length ? list.map(item => preview(item, config.command)).join('\n\n') : 'No integrations are waiting.'); }
+    else if (args[0] === 'review') { const list = pending(); print(list.length ? list.map(item => preview(item, said(config))).join('\n\n') : 'No integrations are waiting.'); }
     else if (args[0] === 'apply') print(`Added the voice step to ${applyOne(args[1] || '')}. The change is not committed.`);
     else if (args[0] === 'dismiss') { dismiss(args[1] || ''); print('Dismissed.'); }
     else throw new Error('Use: ghostpen integrate [candidates | propose | review | decide | apply <id> | dismiss <id> | --print | --run]');
@@ -194,7 +197,7 @@ try {
   } else if (command === 'distil') {
     const config = /** @type {any} */ (readConfig());
     if (!config.app) throw new Error('Run `ghostpen init` first.');
-    const prompt = distilPrompt(config.app, config.command);
+    const prompt = distilPrompt(config.app, said(config));
     if (!flag('run')) print(prompt); else process.exitCode = runAgent(config, prompt);
   } else if (command === 'proposals') {
     const target = store();
@@ -208,13 +211,13 @@ try {
     try {
       const target = store(), waiting = proposals(target).length, raw = pairs(target).length, config = /** @type {any} */ (readConfig());
       const lines = [`ghostpen: before writing anything that will be posted or sent under the user's name, read ${target.guide} and follow it, and log the draft as the ghostpen skill describes.`];
-      if (waiting) lines.push(`${waiting} proposed change${waiting === 1 ? '' : 's'} to the user's voice guide ${waiting === 1 ? 'is' : 'are'} waiting. Early in this session, ask the user whether to review ${waiting === 1 ? 'it' : 'them'} (\`${config.command} proposals\`).`);
+      if (waiting) lines.push(`${waiting} proposed change${waiting === 1 ? '' : 's'} to the user's voice guide ${waiting === 1 ? 'is' : 'are'} waiting. Early in this session, ask the user whether to review ${waiting === 1 ? 'it' : 'them'} (\`${said(config)} proposals\`).`);
       const seeded = evidence(target).some(item => item.origin === 'sample'), sampleCount = seeded || waiting ? 0 : samples(target).length;
-      if (sampleCount) lines.push(`${sampleCount} samples of the user's past writing are ready. Early in this session, ask the user whether to build their first voice guide from them now (\`${config.command} seed --print\` gives the steps).`);
-      if (config.integrate === 'wanted') lines.push(`The user asked to have their own skills checked for places that write text for them. Early in this session, ask whether to do that now (\`${config.command} integrate --print\` gives the steps).`);
-      if (pending().length) lines.push(`${pending().length} proposed skill change${pending().length === 1 ? ' is' : 's are'} waiting for the user's decision (\`${config.command} integrate review\`).`);
+      if (sampleCount) lines.push(`${sampleCount} samples of the user's past writing are ready. Early in this session, ask the user whether to build their first voice guide from them now (\`${said(config)} seed --print\` gives the steps).`);
+      if (config.integrate === 'wanted') lines.push(`The user asked to have their own skills checked for places that write text for them. Early in this session, ask whether to do that now (\`${said(config)} integrate --print\` gives the steps).`);
+      if (pending().length) lines.push(`${pending().length} proposed skill change${pending().length === 1 ? ' is' : 's are'} waiting for the user's decision (\`${said(config)} integrate review\`).`);
       if (waiting) { /* said above */ }
-      else if (raw >= 5 && config.schedule?.id === 'session') lines.push(`${raw} of the user's edits have not been learned from yet. Early in this session, ask the user whether to update their voice guide now (\`${config.command} distil --print\` gives the steps).`);
+      else if (raw >= 5 && config.schedule?.id === 'session') lines.push(`${raw} of the user's edits have not been learned from yet. Early in this session, ask the user whether to update their voice guide now (\`${said(config)} distil --print\` gives the steps).`);
       console.log(lines.join('\n'));
     } catch { /* not set up, or store missing: say nothing */ }
   } else if (command === 'status') {

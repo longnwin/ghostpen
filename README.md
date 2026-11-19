@@ -104,7 +104,7 @@ ghostpen proposals [show|accept|reject <id>]
 
 `ghostpen help` lists the rest, including the commands agents use to log drafts and save evidence.
 
-After `init`, the command lives at `~/.local/share/ghostpen/app/src/cli.mjs`. Until a launcher exists, run it with `node`, or keep using `npx github:longnwin/ghostpen <command>`.
+`init` installs the command as `~/.local/bin/ghostpen`. If that folder is on your PATH you can type `ghostpen`; `init` tells you when it isn't. Skills and steps refer to it as `~/.local/bin/ghostpen`, so the same text works on every machine you set up.
 
 ## Limits
 

@@ -102,4 +102,12 @@ export function removeStep(/** @type {string} */ file) {
   fs.writeFileSync(file, fs.readFileSync(file, 'utf8').replace(BLOCK, '\n').replace(/\n{3,}/g, '\n\n'));
   return true;
 }
+/** Rewrites a step already in a skill so it names the current command, keeping its place and kind. */
+export function refreshStep(/** @type {string} */ file, /** @type {string} */ command) {
+  if (!hasStep(file)) return false;
+  const text = fs.readFileSync(file, 'utf8');
+  const next = text.replace(new RegExp(`${START}[\\s\\S]*?${END}`, 'g'), block => stepBlock(command, (/--kind ([\w-]+)/.exec(block) || [])[1] || 'other'));
+  if (next !== text) fs.writeFileSync(file, next);
+  return next !== text;
+}
 export const clearPending = () => fs.rmSync(pendingFile(), { force: true });

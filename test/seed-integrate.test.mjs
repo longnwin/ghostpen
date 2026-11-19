@@ -141,7 +141,13 @@ test('a proposed step is shown first, applied only on request with fixed text, t
   assert.match(changed, /## Draft a PR comment\n\n<!-- ghostpen:step:start -->\n\*\*Voice\.\*\*[^\n]*draft --kind pr-comment[^\n]*\n<!-- ghostpen:step:end -->\n\nWrite it as the user would\./);
   assert.equal(h.run(['integrate', 'propose', '--file', worker, '--after-line', '3', '--kind', 'pr-comment', '--note', 'again']).status, 1);
   assert.equal(JSON.parse(h.run(['integrate', 'candidates']).stdout).find(item => item.skill === 'review-tool').integrated, true);
+  assert.match(changed, /run `~\/\.local\/bin\/ghostpen guide`/);
+  assert.doesNotMatch(changed, /cli\.mjs/);
   assert.match(h.run(['doctor']).stdout, /ok\s+Voice step in skill: .*worker\.md/);
+  // A step written by an older install, naming a long machine-specific command, is rewritten in place on the next init.
+  fs.writeFileSync(worker, changed.replaceAll('~/.local/bin/ghostpen', '/opt/node/1.2.3/bin/node /old/app/src/cli.mjs'));
+  assert.equal(h.run(['init', '--yes', '--remote', '', '--schedule', 'session', '--instructions', 'each']).status, 0);
+  assert.equal(fs.readFileSync(worker, 'utf8'), changed);
   assert.doesNotMatch(h.run(['hook', 'session-start']).stdout, /skills checked|skill change/);
   assert.equal(h.run(['uninstall']).status, 0);
   assert.equal(fs.readFileSync(worker, 'utf8'), original);

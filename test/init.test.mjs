@@ -37,7 +37,8 @@ test('init wires both agents with no hand edits, puts the voice line in the shar
     const skill = fs.readFileSync(path.join(h.home, dir, 'SKILL.md'), 'utf8');
     assert.match(skill, /^---\nname: ghostpen\ndescription: /);
     assert.doesNotMatch(skill, /\{\{GHOSTPEN\}\}/);
-    assert.ok(skill.includes(path.join(h.home, '.local/share/ghostpen/app/src/cli.mjs')));
+    assert.match(skill, /Run `~\/\.local\/bin\/ghostpen guide`/);
+    assert.doesNotMatch(skill, /cli\.mjs|node/);
   }
   const settings = JSON.parse(fs.readFileSync(path.join(h.home, '.claude', 'settings.json'), 'utf8'));
   assert.equal(settings.theme, 'dark');
@@ -49,6 +50,13 @@ test('init wires both agents with no hand edits, puts the voice line in the shar
   assert.doesNotMatch(fs.readFileSync(path.join(h.home, '.claude', 'CLAUDE.md'), 'utf8'), /ghostpen:start/);
   assert.match(execFileSync('git', ['-C', h.notes, 'log', '--oneline'], { encoding: 'utf8' }), /Add ghostpen voice line/);
   assert.match(result.stdout, /One step left for you: Codex ignores new hooks until you trust them/);
+  const launcher = path.join(h.home, '.local', 'bin', 'ghostpen');
+  assert.equal(fs.statSync(launcher).mode & 0o111, 0o111);
+  const viaLauncher = spawnSync(launcher, ['status'], { encoding: 'utf8', env: { PATH: `${path.dirname(process.execPath)}:/usr/bin:/bin`, HOME: h.home, GHOSTPEN_HOME: h.home, GHOSTPEN_CONFIG_DIR: path.join(h.home, '.config') } });
+  assert.equal(JSON.parse(viaLauncher.stdout).store, store);
+  const bare = spawnSync(launcher, ['guide'], { encoding: 'utf8', env: { PATH: '/nonexistent', HOME: h.home, GHOSTPEN_HOME: h.home, GHOSTPEN_CONFIG_DIR: path.join(h.home, '.config') } });
+  assert.equal(bare.stdout.trim(), path.join(store, 'VOICE.md'), bare.stderr);
+  assert.equal(settings.hooks.SessionStart[0].hooks[0].command, `${launcher} hook session-start`);
   const doctor = h.run(['doctor']);
   assert.equal(doctor.status, 0, doctor.stdout);
   assert.doesNotMatch(doctor.stdout, /MISSING/);
@@ -72,6 +80,7 @@ test('uninstall removes every piece init added and keeps the voice store and the
   const removed = h.run(['uninstall']);
   assert.equal(removed.status, 0, removed.stderr);
   assert.equal(fs.existsSync(path.join(h.home, '.claude/skills/ghostpen')), false);
+  assert.equal(fs.existsSync(path.join(h.home, '.local', 'bin', 'ghostpen')), false);
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(h.home, '.claude', 'settings.json'), 'utf8')), { theme: 'dark', hooks: { Stop: [{ hooks: [{ type: 'command', command: 'echo bye' }] }] } });
   assert.deepEqual(JSON.parse(fs.readFileSync(path.join(h.home, '.codex', 'hooks.json'), 'utf8')), {});
   assert.equal(fs.readFileSync(path.join(h.notes, 'NOTES.md'), 'utf8'), '# Notes\n\nShared operating notes.\n');
@@ -143,7 +152,7 @@ esac
   assert.equal(chosen.status, 0, chosen.stderr);
   assert.deepEqual(config().schedule, { id: 'paseo', state: { id: 'sch_1' } });
   const created = fs.readFileSync(calls, 'utf8').split('\n').filter(line => line.startsWith('schedule create')).at(-1);
-  assert.match(created, /--provider claude --json Update my voice guide from recent edits: run .* distil --print/);
+  assert.match(created, /--provider claude --json Update my voice guide from recent edits: run `~\/\.local\/bin\/ghostpen distil --print`/);
   assert.ok(created.length < 600);
   assert.equal(withPaseo(['uninstall']).status, 0);
   assert.match(fs.readFileSync(calls, 'utf8'), /schedule delete sch_1/);

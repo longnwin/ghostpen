@@ -2,13 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawnSync } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { dataDir, homeDir, quote } from './paths.mjs';
+import { binDir, dataDir, homeDir, quote } from './paths.mjs';
 import { readConfig, writeConfig, configPath } from './config.mjs';
 import { createStore, storeAt } from './store.mjs';
 import { hasHook, installHook, installSkill, knownAgents, removeHook, removeSkill } from './agents.mjs';
 import { addVoiceLine, instructionHomes, removeVoiceLine } from './instructions.mjs';
 import { schedulerById, schedulers } from './schedulers.mjs';
-import { clearPending, hasStep, removeStep } from './integrate.mjs';
+import { clearPending, hasStep, refreshStep, removeStep } from './integrate.mjs';
 import { collectSamples } from './seed.mjs';
 import { ghRunner } from './sources/github.mjs';
 
@@ -26,8 +26,19 @@ function installApp() {
     fs.rmSync(app, { recursive: true, force: true });
     for (const item of ['src', 'skill', 'docs', 'package.json']) fs.cpSync(path.join(PACKAGE, item), path.join(app, item), { recursive: true });
   }
-  return { app, command: `${quote(process.execPath)} ${quote(path.join(app, 'src', 'cli.mjs'))}` };
+  // A launcher with a fixed name, so nothing written into skills, hooks or schedules names a Node version or a long path.
+  // It prefers whatever `node` is on the PATH and falls back to the one that ran init, for environments with a bare PATH.
+  const launcher = path.join(binDir(), 'ghostpen');
+  if (fs.existsSync(launcher) && !fs.readFileSync(launcher, 'utf8').includes(LAUNCHER_MARK)) throw new Error(`${launcher} already exists and was not installed by ghostpen. Move it aside and run init again.`);
+  fs.mkdirSync(binDir(), { recursive: true });
+  fs.writeFileSync(launcher, `#!/bin/sh\n${LAUNCHER_MARK}\nAPP=${quote(path.join(app, 'src', 'cli.mjs'))}\nif command -v node >/dev/null 2>&1; then exec node "$APP" "$@"; fi\nexec ${quote(process.execPath)} "$APP" "$@"\n`, { mode: 0o755 });
+  fs.chmodSync(launcher, 0o755);
+  // In text that may be shared between machines, name it relative to the home folder; a shell expands the tilde.
+  const relative = path.relative(homeDir(), launcher);
+  const say = !relative.startsWith('..') && /^[\w./-]+$/.test(relative) ? `~/${relative}` : quote(launcher);
+  return { app, launcher, command: quote(launcher), say, onPath: (process.env.PATH || '').split(path.delimiter).includes(binDir()) };
 }
+const LAUNCHER_MARK = '# Installed by ghostpen init. Removed by ghostpen uninstall.';
 
 const LEADS = { distil: 'Update my voice guide from recent edits.', seed: 'Build my first voice guide from my past writing.', integrate: 'Find where my own skills write text for me, and propose adding the voice step there.' };
 /** The instructions for one agent-run job, with this machine's ghostpen command filled in. @param {string} app @param {string} command @param {string} job */
@@ -62,10 +73,12 @@ export async function init({ ask, from, log = console.log }) {
   }
 
   // 4. Skill and hook for each agent.
-  const { app, command } = installApp();
+  const { app, launcher, command, say, onPath } = installApp();
+  log(`Command: ${launcher}${onPath ? '' : ` (add ${binDir()} to your PATH to type just "ghostpen")`}`);
+  for (const file of /** @type {string[]} */ (Array.isArray(previous.integrations) ? previous.integrations : [])) refreshStep(file, say);
   const wired = [];
   for (const agent of agents) {
-    const skill = installSkill(agent.skillsDir, path.join(app, 'skill', 'ghostpen'), command);
+    const skill = installSkill(agent.skillsDir, path.join(app, 'skill', 'ghostpen'), say);
     installHook(agent.hooksFile, command);
     if (agent.hooksNote) manual.push(agent.hooksNote);
     wired.push({ id: agent.id, name: agent.name, skill, hooksFile: agent.hooksFile });
@@ -94,11 +107,11 @@ export async function init({ ask, from, log = console.log }) {
   const scheduleId = await ask({ id: 'schedule', text: 'How should voice updates be prepared? They are always proposed for your approval, never applied on their own.',
     choices: options.map(item => ({ value: item.id, label: `${item.label}. ${item.note}` })), fallback: 'session' });
   // Everything above is recorded first, so a schedule that fails to set up never leaves an install that doctor and uninstall cannot see.
-  writeConfig({ store: store.root, app, command, agents: wired, instructions, schedule: { id: 'session', state: {} } });
+  writeConfig({ store: store.root, app, launcher, command, say, agents: wired, instructions, schedule: { id: 'session', state: {} } });
   let schedule = { id: scheduleId, state: /** @type {Record<string, string>} */ ({}) };
   try {
     schedule.state = await schedulerById(scheduleId).install({ command, store: store.root, ask,
-      prompt: `Update my voice guide from recent edits: run \`${command} distil --print\` and follow the instructions it prints exactly. Do not publish, post or push anything.` });
+      prompt: `Update my voice guide from recent edits: run \`${say} distil --print\` and follow the instructions it prints exactly. Do not publish, post or push anything.` });
   } catch (error) {
     log(`Could not set up "${schedulerById(scheduleId).label}": ${/** @type {Error} */ (error).message}. Using "ask me at the start of a session" for now; run init again to change it.`);
     schedule = { id: 'session', state: {} };
@@ -117,8 +130,8 @@ export async function init({ ask, from, log = console.log }) {
       try {
         const result = await collectSamples(store, { run: ghRunner(), repos: scope === 'all' ? [] : scope.split(',').map(r => r.trim()).filter(Boolean), before: before || undefined });
         writeConfig({ seed: 'collected' });
-        log(`Collected ${result.saved['pr-comment']} review comments and ${result.saved['pr-description']} PR descriptions. Your agent will offer to build the guide from them at the start of your next session, or run \`${command} seed --run\` now.`);
-      } catch (error) { log(`Could not collect past writing: ${/** @type {Error} */ (error).message}. You can try again with \`${command} seed collect\`.`); }
+        log(`Collected ${result.saved['pr-comment']} review comments and ${result.saved['pr-description']} PR descriptions. Your agent will offer to build the guide from them at the start of your next session, or run \`${say} seed --run\` now.`);
+      } catch (error) { log(`Could not collect past writing: ${/** @type {Error} */ (error).message}. You can try again with \`${say} seed collect\`.`); }
     }
   }
 
@@ -141,7 +154,7 @@ export function doctor() {
   }
   for (const file of config.instructions || []) checks.push({ ok: (() => { try { return fs.readFileSync(file, 'utf8').includes('ghostpen:start'); } catch { return false; } })(), item: 'Voice line', detail: file });
   for (const file of config.integrations || []) checks.push({ ok: hasStep(file), item: 'Voice step in skill', detail: file });
-  checks.push({ ok: fs.existsSync(path.join(config.app || '', 'src', 'cli.mjs')), item: 'ghostpen command', detail: config.command || '' });
+  checks.push({ ok: fs.existsSync(path.join(config.app || '', 'src', 'cli.mjs')) && fs.existsSync(config.launcher || ''), item: 'ghostpen command', detail: config.launcher || config.command || '' });
   checks.push({ ok: Boolean(config.schedule?.id), item: 'Schedule', detail: config.schedule?.id || 'none' });
   return checks;
 }
@@ -155,6 +168,7 @@ export function uninstall() {
   clearPending();
   if (config.schedule?.id) { try { schedulerById(config.schedule.id).remove(config.schedule.state || {}); } catch { /* already gone */ } }
   if (config.app && config.app.startsWith(dataDir())) fs.rmSync(config.app, { recursive: true, force: true });
+  if (config.launcher && fs.existsSync(config.launcher) && fs.readFileSync(config.launcher, 'utf8').includes(LAUNCHER_MARK)) fs.rmSync(config.launcher);
   fs.rmSync(configPath(), { force: true });
   return { kept: config.store || null };
 }
