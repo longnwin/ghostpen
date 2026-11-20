@@ -111,20 +111,30 @@ export async function init({ ask, from, log = console.log }) {
     if (files.length) log(`Voice line added to ${files.join(', ')}.`);
   }
 
-  // 6. How distilling runs.
-  if (previous.schedule && typeof previous.schedule === 'object') { const old = /** @type {{id: string, state: Record<string, string>}} */ (previous.schedule); try { schedulerById(old.id).remove(old.state || {}); } catch { /* already gone */ } }
+  // 6. How distilling runs. Running setup again keeps the schedule already in place unless another is chosen.
+  const old = previous.schedule && typeof previous.schedule === 'object' ? /** @type {{id: string, state: Record<string, string>}} */ (previous.schedule) : null;
   const options = schedulers.filter(item => item.available());
   const scheduleId = await ask({ id: 'schedule', text: 'How should voice updates be prepared? They are always proposed for your approval, never applied on their own.',
-    choices: options.map(item => ({ value: item.id, label: `${item.label}. ${item.note}` })), fallback: 'session' });
+    choices: options.map(item => ({ value: item.id, label: `${item.label}. ${item.note}` })), fallback: old && options.some(item => item.id === old.id) ? old.id : 'session' });
+  // A scheduler may ask the same thing while checking what is in place and again while setting up; ask the user once.
+  const answers = new Map();
+  /** @type {Ask} */
+  const askOnce = async question => { if (!answers.has(question.id)) answers.set(question.id, await ask(question)); return answers.get(question.id); };
+  /** @type {Record<string, string> | null} */
+  let kept = null;
+  if (old && old.id === scheduleId) { try { kept = await schedulerById(scheduleId).current?.(old.state || {}, { ask: askOnce }) ?? null; } catch { kept = null; } }
+  if (!kept && old) { try { schedulerById(old.id).remove(old.state || {}); } catch { /* already gone */ } }
   // Everything above is recorded first, so a schedule that fails to set up never leaves an install that doctor and uninstall cannot see.
-  writeConfig({ store: store.root, app, launcher, command, say, agents: wired, instructions, sync: syncMode, schedule: { id: 'session', state: {} } });
-  let schedule = { id: scheduleId, state: /** @type {Record<string, string>} */ ({}) };
-  try {
-    schedule.state = await schedulerById(scheduleId).install({ command, store: store.root, ask,
-      prompt: `Update my voice guide from recent edits: run \`${say} distil --print\` and follow the instructions it prints exactly. Do not publish, post or push anything.` });
-  } catch (error) {
-    log(`Could not set up "${schedulerById(scheduleId).label}": ${/** @type {Error} */ (error).message}. Using "ask me at the start of a session" for now; run init again to change it.`);
-    schedule = { id: 'session', state: {} };
+  writeConfig({ store: store.root, app, launcher, command, say, agents: wired, instructions, sync: syncMode, schedule: kept ? { id: scheduleId, state: kept } : { id: 'session', state: {} } });
+  let schedule = { id: scheduleId, state: kept || /** @type {Record<string, string>} */ ({}) };
+  if (!kept) {
+    try {
+      schedule.state = await schedulerById(scheduleId).install({ command, store: store.root, ask: askOnce, previous: old && old.id === scheduleId ? old.state : undefined,
+        prompt: `Update my voice guide from recent edits: run \`${say} distil --print\` and follow the instructions it prints exactly. Do not publish, post or push anything.` });
+    } catch (error) {
+      log(`Could not set up "${schedulerById(scheduleId).label}": ${/** @type {Error} */ (error).message}. Using "ask me at the start of a session" for now; run init again to change it.`);
+      schedule = { id: 'session', state: {} };
+    }
   }
   log(`Schedule: ${schedulerById(schedule.id).label}.`);
 

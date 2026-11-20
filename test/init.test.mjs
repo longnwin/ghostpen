@@ -133,7 +133,8 @@ printf '%s\\n' "$*" >> ${calls}
 case "$1 $2" in
   "--version "*) exit 0 ;;
   "provider ls") echo '[{"provider":"claude","label":"Claude","status":"available"},{"provider":"other","label":"Other","status":"unavailable"}]' ;;
-  "schedule create") case "$*" in *"--provider claude"*) echo '{"id":"sch_1"}' ;; *) echo '{"error":{"message":"Provider is required"}}'; exit 1 ;; esac ;;
+  "schedule create") case "$*" in *"--provider claude"*) echo '{"id":"sch_1"}' ;; *"--provider codex/big"*) echo '{"id":"sch_2"}' ;; *) echo '{"error":{"message":"Provider is required"}}'; exit 1 ;; esac ;;
+  "schedule inspect") case "$3" in sch_1) echo '{"id":"sch_1","target":{"config":{"provider":"claude"}}}' ;; sch_2) echo '{"id":"sch_2","target":{"config":{"provider":"codex","model":"big"}}}' ;; *) exit 1 ;; esac ;;
   "schedule delete") exit 0 ;;
 esac
 `, { mode: 0o755 });
@@ -150,10 +151,67 @@ esac
 
   const chosen = withPaseo(['init', '--yes', '--remote', '', '--schedule', 'paseo', '--provider', 'claude']);
   assert.equal(chosen.status, 0, chosen.stderr);
-  assert.deepEqual(config().schedule, { id: 'paseo', state: { id: 'sch_1' } });
+  assert.deepEqual(config().schedule, { id: 'paseo', state: { id: 'sch_1', provider: 'claude' } });
   const created = fs.readFileSync(calls, 'utf8').split('\n').filter(line => line.startsWith('schedule create')).at(-1);
   assert.match(created, /--provider claude --json Update my voice guide from recent edits: run `~\/\.local\/bin\/ghostpen distil --print`/);
   assert.ok(created.length < 600);
   assert.equal(withPaseo(['uninstall']).status, 0);
   assert.match(fs.readFileSync(calls, 'utf8'), /schedule delete sch_1/);
+});
+
+test('running init again keeps the schedule already in place, and replaces it only when asked for something else', t => {
+  const h = fakeHome(t);
+  const bin = path.join(h.home, 'bin'), calls = path.join(h.home, 'paseo-calls.log');
+  fs.mkdirSync(bin);
+  fs.writeFileSync(path.join(bin, 'paseo'), `#!/bin/sh
+printf '%s\\n' "$*" >> ${calls}
+case "$1 $2" in
+  "--version "*) exit 0 ;;
+  "provider ls") echo '[{"provider":"claude","label":"Claude","status":"available"}]' ;;
+  "schedule create") case "$*" in *"--provider claude"*) echo '{"id":"sch_1"}' ;; *"--provider codex/big"*) echo '{"id":"sch_2"}' ;; *) exit 1 ;; esac ;;
+  "schedule inspect") case "$3" in sch_1) [ -f ${h.home}/sch_1.gone ] && exit 1; echo '{"id":"sch_1","target":{"config":{"provider":"claude"}}}' ;; sch_2) echo '{"id":"sch_2","target":{"config":{"provider":"codex","model":"big"}}}' ;; *) exit 1 ;; esac ;;
+  "schedule delete") exit 0 ;;
+esac
+`, { mode: 0o755 });
+  const run = (...args) => spawnSync(process.execPath, [CLI, 'init', '--yes', '--remote', '', ...args], { encoding: 'utf8', env: { PATH: `${bin}:${path.dirname(process.execPath)}:/usr/bin:/bin`, HOME: h.home, GHOSTPEN_HOME: h.home,
+    GHOSTPEN_CONFIG_DIR: path.join(h.home, '.config'), GHOSTPEN_DATA_DIR: path.join(h.home, '.local', 'share', 'ghostpen'), GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@example.test', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@example.test' } });
+  const config = () => JSON.parse(fs.readFileSync(path.join(h.home, '.config', 'ghostpen', 'config.json'), 'utf8'));
+  const log = () => fs.readFileSync(calls, 'utf8').split('\n').filter(line => /^schedule (create|delete)/.test(line)).map(line => line.split(' ').slice(0, 3).join(' ').replace(/ --cron$/, ''));
+
+  assert.equal(run('--schedule', 'paseo', '--provider', 'claude').status, 0);
+  assert.deepEqual(log(), ['schedule create']);
+
+  // No schedule flag at all: the one in place stays, untouched.
+  const again = run();
+  assert.equal(again.status, 0, again.stderr);
+  assert.match(again.stdout, /Schedule: Paseo schedule, daily\./);
+  assert.deepEqual(config().schedule, { id: 'paseo', state: { id: 'sch_1', provider: 'claude' } });
+  assert.deepEqual(log(), ['schedule create'], 'nothing was deleted or created');
+
+  // Named again with the same agent: still untouched.
+  assert.equal(run('--schedule', 'paseo', '--provider', 'claude').status, 0);
+  assert.deepEqual(log(), ['schedule create']);
+
+  // A different agent is a real change: the old schedule goes and a new one is made.
+  assert.equal(run('--schedule', 'paseo', '--provider', 'codex/big').status, 0);
+  assert.deepEqual(config().schedule, { id: 'paseo', state: { id: 'sch_2', provider: 'codex/big' } });
+  assert.deepEqual(log(), ['schedule create', 'schedule delete sch_1', 'schedule create']);
+  assert.equal(run().status, 0);
+  assert.deepEqual(config().schedule, { id: 'paseo', state: { id: 'sch_2', provider: 'codex/big' } }, 'a model chosen earlier is recognised as the same agent');
+
+  // Choosing another option removes the schedule.
+  assert.equal(run('--schedule', 'session').status, 0);
+  assert.deepEqual(config().schedule, { id: 'session', state: {} });
+  assert.equal(log().at(-1), 'schedule delete sch_2');
+  assert.equal(run().status, 0);
+  assert.equal(config().schedule.id, 'session', 'and session stays the choice afterwards');
+
+  // A schedule someone deleted in Paseo is set up again, as the agent it was recorded with.
+  assert.equal(run('--schedule', 'paseo', '--provider', 'claude').status, 0);
+  fs.writeFileSync(path.join(h.home, 'sch_1.gone'), '');
+  const before = log().length;
+  assert.equal(run().status, 0);
+  assert.deepEqual(log().slice(before), ['schedule delete sch_1', 'schedule create']);
+  assert.match(fs.readFileSync(calls, 'utf8').split('\n').filter(line => line.startsWith('schedule create')).at(-1), /--provider claude /, 'as the agent recorded before, without being told again');
+  assert.equal(config().schedule.id, 'paseo');
 });
