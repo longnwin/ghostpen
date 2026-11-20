@@ -11,6 +11,7 @@ import { schedulerById, schedulers } from './schedulers.mjs';
 import { clearPending, hasStep, refreshStep, removeStep } from './integrate.mjs';
 import { collectSamples } from './seed.mjs';
 import { ghRunner } from './sources/github.mjs';
+import { describe, lastSync, remoteState, sync } from './sync.mjs';
 
 const PACKAGE = fileURLToPath(new URL('..', import.meta.url));
 
@@ -72,6 +73,15 @@ export async function init({ ask, from, log = console.log }) {
     if (name) { execFileSync('gh', ['repo', 'create', name, '--private', '--source', store.root, '--push'], { stdio: ['ignore', 'ignore', 'inherit'] }); log(`Created private repository ${name}.`); }
   }
 
+  // 3b. Keeping it the same across machines. Sending evidence to the remote is a choice, never a default.
+  let syncMode = 'off';
+  if (spawnSync('git', ['-C', store.root, 'remote', 'get-url', 'origin'], { stdio: 'ignore' }).status === 0) {
+    syncMode = await ask({ id: 'sync', text: 'Keep this voice store in step with your other machines automatically? It pulls when a session starts and pushes after each change. Only the guide, sanitized evidence and proposals are in the repository; raw drafts never leave this machine.',
+      choices: [{ value: 'auto', label: 'Yes, sync automatically' }, { value: 'off', label: 'No, I will run `ghostpen sync` myself' }], fallback: previous.sync === 'auto' ? 'auto' : 'off' });
+    if (syncMode !== 'auto') syncMode = 'off';
+    if (syncMode === 'auto') { const result = sync(store); log(describe(store, result)); }
+  }
+
   // 4. Skill and hook for each agent.
   const { app, launcher, command, say, onPath } = installApp();
   log(`Command: ${launcher}${onPath ? '' : ` (add ${binDir()} to your PATH to type just "ghostpen")`}`);
@@ -107,7 +117,7 @@ export async function init({ ask, from, log = console.log }) {
   const scheduleId = await ask({ id: 'schedule', text: 'How should voice updates be prepared? They are always proposed for your approval, never applied on their own.',
     choices: options.map(item => ({ value: item.id, label: `${item.label}. ${item.note}` })), fallback: 'session' });
   // Everything above is recorded first, so a schedule that fails to set up never leaves an install that doctor and uninstall cannot see.
-  writeConfig({ store: store.root, app, launcher, command, say, agents: wired, instructions, schedule: { id: 'session', state: {} } });
+  writeConfig({ store: store.root, app, launcher, command, say, agents: wired, instructions, sync: syncMode, schedule: { id: 'session', state: {} } });
   let schedule = { id: scheduleId, state: /** @type {Record<string, string>} */ ({}) };
   try {
     schedule.state = await schedulerById(scheduleId).install({ command, store: store.root, ask,
@@ -156,6 +166,11 @@ export function doctor() {
   for (const file of config.integrations || []) checks.push({ ok: hasStep(file), item: 'Voice step in skill', detail: file });
   checks.push({ ok: fs.existsSync(path.join(config.app || '', 'src', 'cli.mjs')) && fs.existsSync(config.launcher || ''), item: 'ghostpen command', detail: config.launcher || config.command || '' });
   checks.push({ ok: Boolean(config.schedule?.id), item: 'Schedule', detail: config.schedule?.id || 'none' });
+  const voice = storeAt(config.store), { remote, ahead, behind } = remoteState(voice), last = lastSync(voice);
+  const stuck = config.sync === 'auto' && (last?.status === 'conflict' || last?.status === 'dirty');
+  checks.push({ ok: !stuck, item: 'Sync', detail: !remote ? 'no remote; this store lives on this machine only'
+    : stuck && last ? describe(voice, last)
+    : `${config.sync === 'auto' ? 'automatic' : 'manual (run `ghostpen sync`)'}; ${ahead} not sent, ${behind} not received as of the last check${last ? `; last sync ${last.status} at ${last.at}` : ''}` });
   return checks;
 }
 

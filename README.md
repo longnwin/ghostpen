@@ -17,6 +17,7 @@ npx github:longnwin/ghostpen init
 1. **Which agents to set up.** It detects Claude Code and Codex and lists each with its skills folder.
 2. **Where your voice lives.** A folder for the guide and its evidence, kept as a local git repo.
 3. **Whether to create a private GitHub repo for it**, so other machines can use the same voice.
+   If the store has a remote, it also asks **whether to keep it in step automatically** (off unless you say yes).
 4. **Where the "read my voice guide" line goes.** It looks at what each agent already loads in every session and offers the best place first: a shared notes file if all your agents load one, otherwise each agent's own instructions file.
 5. **How voice updates are prepared.** Only the options that exist on your machine: ask at the start of a session, a daily Paseo schedule, or cron.
 6. **Whether to build a first guide from what you've already written on GitHub.**
@@ -29,6 +30,8 @@ On a second machine, pass your voice repo:
 ```sh
 npx github:longnwin/ghostpen init --from <your voice repo URL>
 ```
+
+Add `--sync auto` to have that machine pull and push by itself; see [More than one machine](#more-than-one-machine).
 
 Codex ignores new hooks until you trust them. After `init`, open Codex, run `/hooks`, and trust the `SessionStart` entry whose command ends in `hook session-start`.
 
@@ -47,6 +50,37 @@ ghostpen proposals
 ghostpen proposals show <id>
 ghostpen proposals accept <id>
 ```
+
+## More than one machine
+
+The voice store is a git repository, so machines share it through its remote. By default nothing is sent or
+fetched unless you ask:
+
+```sh
+ghostpen sync          # pull what other machines pushed, then push what this one committed
+ghostpen sync auto     # have this machine do that by itself from now on
+ghostpen sync off      # back to doing it by hand
+```
+
+With automatic syncing on, a machine pulls in the background when an agent session starts and pushes after
+each change to the store (new evidence, a proposal, an accepted or rejected proposal). It also pulls before
+distilling, so a voice update works from everything every machine has gathered.
+
+- **What travels:** the guide, sanitized evidence and proposals. Raw drafts, unsanitized pairs and writing
+  samples stay in `.cache`, which git ignores. They never leave the machine.
+- **It never gets in the way.** Network steps are time-limited and run in the background. Being offline is
+  not an error; the commits wait and go out next time.
+- **It never picks a winner.** If two machines changed the same part of the store, typically by accepting
+  different proposals, the sync stops, leaves both versions exactly as they were, and tells you at the start
+  of your next session. Settle it in the store with `git pull --rebase`, then run `ghostpen sync`.
+- **It never forces.** No force-push, no discarded commits, no merge commits: local commits are replayed on
+  top of the remote's.
+
+`ghostpen doctor` and `ghostpen status` show whether a machine syncs automatically and how many changes are
+waiting in each direction.
+
+Let one machine prepare voice updates on a schedule and leave the others on "ask at the start of a session".
+Two machines distilling the same evidence on the same day can each propose the same change.
 
 ## A first guide from past writing
 

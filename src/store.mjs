@@ -66,8 +66,12 @@ export function createStore(root) {
 export function commit(store, message) {
   git(store.root, ['add', '-A']);
   if (!git(store.root, ['status', '--porcelain']).trim()) return false;
-  const identity = (() => { try { return git(store.root, ['config', 'user.email']).trim() ? [] : null; } catch { return null; } })()
-    ?? ['-c', 'user.name=ghostpen', '-c', 'user.email=ghostpen@localhost'];
-  git(store.root, [...identity, 'commit', '-q', '-m', message]);
+  git(store.root, [...identity(store.root), 'commit', '-q', '-m', message]);
   return true;
+}
+
+/** Git arguments that supply an author when the machine has none configured. Empty when it has. @param {string} root */
+export function identity(root) {
+  try { if (git(root, ['config', 'user.email']).trim()) return []; } catch { /* not configured */ }
+  return ['-c', 'user.name=ghostpen', '-c', 'user.email=ghostpen@localhost'];
 }

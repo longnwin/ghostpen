@@ -15,6 +15,7 @@ import readline from 'node:readline/promises';
 import { spawnSync } from 'node:child_process';
 import { addProposal, acceptProposal, proposals, rejectProposal } from './proposals.mjs';
 import { distilPrompt, doctor, init, instructionsPrompt, uninstall } from './init.mjs';
+import { describe, due, lastSync, remoteState, sync, syncInBackground } from './sync.mjs';
 
 const [command, ...args] = process.argv.slice(2);
 const flag = (/** @type {string} */ name) => args.includes(`--${name}`);
@@ -62,6 +63,11 @@ async function decide(/** @type {any} */ config) {
   console.log(changed.length ? `\nChanged, not committed:\n${changed.map(file => `  ${file}`).join('\n')}` : '\nNo files were changed.');
 }
 
+/** Whether this machine keeps its voice store in step with the remote on its own. */
+const autoSync = () => readConfig().sync === 'auto';
+/** After a commit to the store: send it, without making the caller wait or fail. */
+const sent = (/** @type {import('./store.mjs').Store} */ target) => { if (autoSync()) syncInBackground(target); };
+
 /** The command as it should appear in text an agent reads. */
 const said = (/** @type {any} */ config) => config.say || config.command;
 
@@ -92,6 +98,8 @@ const HELP = `ghostpen — teaches your coding agents to write like you.
                                      Review proposed changes to your voice guide
   ghostpen proposals add --summary <text> --guide <path> [--evidence <ids>]
   ghostpen status                    Counts of drafts, pairs and evidence
+  ghostpen sync [auto | off]         Bring the voice store in step with your other machines now,
+                                     or turn doing that automatically on or off for this machine
   ghostpen init [--from <git url>] [--yes]   Set up ghostpen on this machine
   ghostpen doctor                    Check that everything init set up is still in place
   ghostpen uninstall                 Remove what init wired up; your voice store is kept
@@ -121,7 +129,7 @@ try {
     const leaks = leakedSpecifics([pair.before, pair.after], [before, after]);
     if (leaks.length && !flag('allow-specifics')) throw new Error(`The sanitized text still contains specifics from the original: ${leaks.slice(0, 12).join(', ')}. Rewrite them, or pass --allow-specifics if they are generic.`);
     saveEvidence(target, { id: randomUUID(), version: RECORD_VERSION, kind: pair.kind, before, after, source: pair.source, similarity: pair.similarity, recordedAt: new Date().toISOString() });
-    removePair(target, pair.id); commit(target, `Add ${pair.kind} evidence`);
+    removePair(target, pair.id); commit(target, `Add ${pair.kind} evidence`); sent(target);
     print({ saved: true });
   } else if (command === 'evidence' && args[0] === 'add-sample') {
     const target = store(), sample = samples(target).find(item => item.id === required('sample'));
@@ -130,7 +138,7 @@ try {
     const leaks = leakedSpecifics([sample.body], [text]);
     if (leaks.length && !flag('allow-specifics')) throw new Error(`The sanitized text still contains specifics from the original: ${leaks.slice(0, 12).join(', ')}. Rewrite them, or pass --allow-specifics if they are generic.`);
     const saved = saveEvidence(target, { id: randomUUID(), version: RECORD_VERSION, kind: sample.kind, before: '', after: text, source: sample.source, similarity: 0, recordedAt: new Date().toISOString(), origin: 'sample' });
-    commit(target, `Add ${sample.kind} sample evidence`);
+    commit(target, `Add ${sample.kind} sample evidence`); sent(target);
     print({ id: saved.id });
   } else if (command === 'seed' && args[0] === 'collect') {
     const result = await collectSamples(store(), { run: ghRunner(), repos: (option('repo') || '').split(',').map(r => r.trim()).filter(Boolean), before: option('before') });
@@ -197,13 +205,16 @@ try {
   } else if (command === 'distil') {
     const config = /** @type {any} */ (readConfig());
     if (!config.app) throw new Error('Run `ghostpen init` first.');
+    // Distilling reads all the evidence, so start from what every machine has gathered. Notes go to stderr:
+    // stdout is the instructions an agent is about to follow.
+    if (autoSync()) { const result = sync(store(), { timeout: 8000 }); if (result.status !== 'ok' && result.status !== 'busy') console.error(describe(store(), result)); }
     const prompt = distilPrompt(config.app, said(config));
-    if (!flag('run')) print(prompt); else process.exitCode = runAgent(config, prompt);
+    if (!flag('run')) print(prompt); else { process.exitCode = runAgent(config, prompt); sent(store()); }
   } else if (command === 'proposals') {
     const target = store();
-    if (args[0] === 'add') print({ id: addProposal(target, { summary: required('summary'), guide: readText(required('guide')), evidence: (option('evidence') || '').split(',').map(id => id.trim()).filter(Boolean) }).id });
-    else if (args[0] === 'accept') print(`Voice guide updated: ${acceptProposal(target, args[1] || '').summary}`);
-    else if (args[0] === 'reject') print(`Rejected: ${rejectProposal(target, args[1] || '').summary}`);
+    if (args[0] === 'add') { print({ id: addProposal(target, { summary: required('summary'), guide: readText(required('guide')), evidence: (option('evidence') || '').split(',').map(id => id.trim()).filter(Boolean) }).id }); sent(target); }
+    else if (args[0] === 'accept') { print(`Voice guide updated: ${acceptProposal(target, args[1] || '').summary}`); sent(target); }
+    else if (args[0] === 'reject') { print(`Rejected: ${rejectProposal(target, args[1] || '').summary}`); sent(target); }
     else if (args[0] === 'show') { const found = proposals(target).filter(item => item.id.startsWith(args[1] || ' ')); if (found.length !== 1) throw new Error('No single proposal has that id.'); print(`${found[0].summary}\n\n--- proposed guide ---\n${found[0].guide}`); }
     else print(proposals(target).map(item => ({ id: item.id.slice(0, 8), createdAt: item.createdAt, summary: item.summary })));
   } else if (command === 'hook' && args[0] === 'session-start') {
@@ -218,11 +229,29 @@ try {
       if (pending().length) lines.push(`${pending().length} proposed skill change${pending().length === 1 ? ' is' : 's are'} waiting for the user's decision (\`${said(config)} integrate review\`).`);
       if (waiting) { /* said above */ }
       else if (raw >= 5 && config.schedule?.id === 'session') lines.push(`${raw} of the user's edits have not been learned from yet. Early in this session, ask the user whether to update their voice guide now (\`${said(config)} distil --print\` gives the steps).`);
+      if (config.sync === 'auto') {
+        // Never wait on the network here. The guide is read later in the session, by which time this has landed.
+        const last = lastSync(target);
+        if (last?.status === 'conflict' || last?.status === 'dirty') lines.push(`ghostpen could not sync the user's voice store with their other machines. Tell the user early in this session, in these words: ${describe(target, last)}`);
+        if (due(target)) syncInBackground(target);
+      }
       console.log(lines.join('\n'));
     } catch { /* not set up, or store missing: say nothing */ }
+  } else if (command === 'sync') {
+    if (args[0] === 'auto' || args[0] === 'off') {
+      writeConfig({ sync: args[0] });
+      print(args[0] === 'auto' ? 'This machine will now keep its voice store in step with the remote on its own.' : 'Automatic syncing is off on this machine. `ghostpen sync` still works when you run it.');
+    } else {
+      // Asked for by name, so it runs whether or not automatic syncing is on.
+      const target = store(), result = sync(target);
+      if (!flag('quiet')) print(describe(target, result));
+      if (result.status === 'conflict' || result.status === 'dirty') process.exitCode = 1;
+    }
   } else if (command === 'status') {
     const target = store(), all = drafts(target);
+    const { remote, ahead, behind } = remoteState(target), last = lastSync(target);
     print({ store: target.root, drafts: { open: all.filter(d => d.status === 'open').length, paired: all.filter(d => d.status === 'paired').length, unposted: all.filter(d => d.status === 'unposted').length },
-      pairsWaiting: pairs(target).length, evidence: evidence(target).length });
+      pairsWaiting: pairs(target).length, evidence: evidence(target).length,
+      sync: remote ? { automatic: autoSync(), notSent: ahead, notReceived: behind, last: last ? `${last.status} at ${last.at}` : 'never' } : 'no remote' });
   } else { print(HELP); if (command && command !== 'help') process.exitCode = 1; }
 } catch (error) { console.error(/** @type {Error} */ (error).message); process.exitCode = 1; }
