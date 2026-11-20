@@ -35,6 +35,48 @@ Add `--sync auto` to have that machine pull and push by itself; see [More than o
 
 Codex ignores new hooks until you trust them. After `init`, open Codex, run `/hooks`, and trust the `SessionStart` entry whose command ends in `hook session-start`.
 
+### Have your agent install it
+
+`init` asks its questions in a terminal. An agent has no terminal, so `init` takes every default without
+asking, and the defaults are the cautious ones: a new store in `~/.ghostpen/voice`, no GitHub repo, no
+syncing, no schedule, no seeding. Pass the answers you want as flags.
+
+Paste this to your coding agent, with the command edited to suit:
+
+```text
+Set up ghostpen on this machine. Do exactly these steps and stop if one fails.
+
+1. Check `node --version` (20 or newer) and `git --version`. Do not install or upgrade anything.
+2. Run:
+
+   npx --yes github:longnwin/ghostpen init --yes --schedule session
+
+3. Run `~/.local/bin/ghostpen doctor` and show me all of its output.
+4. Tell me which files it changed outside the voice store, and repeat any
+   "one step left for you" line it printed, word for word.
+
+Do not create or change credentials. Do not run `ghostpen seed`, `distil` or
+`integrate`, and do not edit my skills or settings yourself.
+```
+
+| Flag | Answers | Without it |
+| --- | --- | --- |
+| `--from <git url>` | Use an existing voice repo (a second machine) | Creates a new store |
+| `--store <folder>` | Where the store lives | `~/.ghostpen/voice` |
+| `--agents claude,codex` | Which agents to set up | Every agent it finds |
+| `--remote <name>` | Create a private GitHub repo with this name (needs `gh`) | No repo |
+| `--sync auto` | Pull and push by itself | Off, or what the machine already has |
+| `--instructions <file>`, `each` or `none` | Where the "read my voice guide" line goes | The best shared file it finds |
+| `--schedule session`, `paseo` or `cron` | How voice updates are prepared | `session`, or what the machine already has |
+| `--provider <provider>` or `<provider>/<model>` | The agent a Paseo schedule runs as | Required the first time with `--schedule paseo` |
+| `--seed all` or `<owner/repo,...>` | Collect your past writing for a first guide (needs `gh`) | Starts empty |
+| `--seed-before <YYYY-MM-DD>` | Only writing from before this date | No cutoff |
+| `--integrate yes` | Offer to check your skills at your next session | No |
+
+Running `init` again is how a machine picks up a newer ghostpen, and how you change an answer. It keeps what
+you chose before: the store, the agents, the sync setting and the schedule. A schedule that is already in
+place is left alone unless you pass a different `--schedule` or `--provider`.
+
 ## How it works
 
 **The guide.** One file, `VOICE.md`, with a core section that applies to everything and short sections for what differs by kind of writing. Agents read it before drafting. It's plain Markdown, so you can edit it yourself.
