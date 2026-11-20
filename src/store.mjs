@@ -47,6 +47,7 @@ export function createStore(root) {
   if (fs.existsSync(marker)) {
     const { version } = JSON.parse(fs.readFileSync(marker, 'utf8'));
     if (version !== STORE_VERSION) throw new Error(`This voice store uses layout version ${version}; this ghostpen understands version ${STORE_VERSION}.`);
+    assertStoreRoot(store);
     return store;
   }
   if (fs.existsSync(store.root) && fs.readdirSync(store.root).length) throw new Error(`${store.root} exists and is not a voice store. Choose an empty folder.`);
@@ -55,18 +56,29 @@ export function createStore(root) {
   fs.writeFileSync(marker, JSON.stringify({ version: STORE_VERSION }, null, 2) + '\n');
   fs.writeFileSync(path.join(store.root, '.gitignore'), '.cache/\n');
   git(store.root, ['init', '-q', '-b', 'main']);
-  commit(store, 'Create voice store');
+  commit(store, 'Create voice store', store.guide, marker, path.join(store.root, '.gitignore'),
+    path.join(store.evidence, '.gitkeep'), path.join(store.proposals, '.gitkeep'));
   return store;
 }
 
+/** @param {Store} store */
+export function assertStoreRoot(store) {
+  if (git(store.root, ['rev-parse', '--show-prefix']).trim() !== '') {
+    throw new Error(`${store.root} must be the root of its own Git repository.`);
+  }
+}
+
 /**
- * Commits everything tracked in the store. Uses a fallback identity so a machine without git config still gets history.
- * @param {Store} store @param {string} message
+ * Commits only the files written by the current operation and keeps unrelated staged changes.
+ * @param {Store} store @param {string} message @param {string[]} files
  */
-export function commit(store, message) {
-  git(store.root, ['add', '-A']);
-  if (!git(store.root, ['status', '--porcelain']).trim()) return false;
-  git(store.root, [...identity(store.root), 'commit', '-q', '-m', message]);
+export function commit(store, message, ...files) {
+  if (!files.length) return false;
+  assertStoreRoot(store);
+  const paths = files.map(file => path.relative(store.root, file));
+  git(store.root, ['--literal-pathspecs', 'add', '-A', '--', ...paths]);
+  if (!git(store.root, ['--literal-pathspecs', 'diff', '--cached', '--name-only', '--', ...paths]).trim()) return false;
+  git(store.root, ['--literal-pathspecs', ...identity(store.root), 'commit', '-q', '--only', '-m', message, '--', ...paths]);
   return true;
 }
 

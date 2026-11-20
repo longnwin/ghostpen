@@ -88,6 +88,40 @@ test('uninstall removes every piece init added and keeps the voice store and the
   assert.equal(h.run(['hook', 'session-start']).stdout, '');
 });
 
+test('upgrading and uninstalling remove only Ghostpen hooks and preserve their matcher siblings', t => {
+  const h = fakeHome(t);
+  const init = ['init', '--yes', '--agents', 'claude', '--schedule', 'session'];
+  assert.equal(h.run(init).status, 0);
+  const configFile = path.join(h.home, '.config', 'ghostpen', 'config.json');
+  const settingsFile = path.join(h.home, '.claude', 'settings.json');
+  const read = file => JSON.parse(fs.readFileSync(file, 'utf8'));
+  const write = (file, contents) => fs.writeFileSync(file, JSON.stringify(contents));
+  const config = read(configFile);
+  const currentCommand = config.command;
+  const oldCommand = 'node /previous-install/ghostpen/src/cli.mjs';
+  write(configFile, { ...config, command: oldCommand });
+  const settings = read(settingsFile);
+  const unrelated = { matcher: 'startup', hooks: [
+    { type: 'command', command: 'another-tool hook session-start' },
+    { type: 'command', command: 'echo sibling' },
+  ] };
+  settings.hooks.SessionStart = [{ ...unrelated, hooks: [...unrelated.hooks,
+    { type: 'command', command: `${oldCommand} hook session-start`, timeout: 10 },
+  ] }];
+  write(settingsFile, settings);
+
+  assert.equal(h.run(init).status, 0);
+  const installed = read(settingsFile);
+  assert.deepEqual(installed.hooks.SessionStart, [unrelated, {
+    hooks: [{ type: 'command', command: `${currentCommand} hook session-start`, timeout: 10 }],
+  }]);
+  installed.hooks.SessionStart = [{ ...unrelated, hooks: [...unrelated.hooks, ...installed.hooks.SessionStart[1].hooks] }];
+  write(settingsFile, installed);
+
+  assert.equal(h.run(['uninstall']).status, 0);
+  assert.deepEqual(read(settingsFile).hooks.SessionStart, [unrelated]);
+});
+
 test('agents that share one skills folder get one copy; choosing one agent and its own file leaves the other untouched', t => {
   const shared = fakeHome(t, { sharedSkills: true });
   assert.equal(shared.run(['init', '--yes', '--remote', '', '--schedule', 'session']).status, 0);

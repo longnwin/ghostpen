@@ -2,13 +2,13 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { execFileSync, spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
-import { identity } from './store.mjs';
+import { assertStoreRoot, identity } from './store.mjs';
 
 /**
  * Keeps one voice store the same on every machine that uses it, through the store's own git remote.
  *
- * Only what the store already commits travels: the guide, sanitized evidence and proposals. Raw drafts and
- * pairs live in `.cache`, which git ignores, so they never leave the machine.
+ * Git sends committed changes. Ghostpen keeps raw drafts and pairs in the local `.cache` directory
+ * and refuses to send commits that touch it.
  *
  * Two rules shape everything here. Syncing must never fail or slow down the thing that triggered it, so
  * every network step has a time limit and every failure is a result, not an exception. And it must never
@@ -16,7 +16,7 @@ import { identity } from './store.mjs';
  * store back exactly as it was and says so.
  */
 
-/** @typedef {'ok' | 'no-remote' | 'offline' | 'conflict' | 'dirty' | 'busy'} SyncStatus */
+/** @typedef {'ok' | 'no-remote' | 'offline' | 'conflict' | 'dirty' | 'unsafe' | 'busy'} SyncStatus */
 /** @typedef {{status: SyncStatus, pulled: number, pushed: number, detail?: string}} SyncResult */
 /** @typedef {import('./store.mjs').Store} Store */
 
@@ -35,6 +35,14 @@ const attempt = (root, args, timeout) => {
   catch (error) { const e = /** @type {any} */ (error); return { ok: false, err: String(e.stderr || e.message || '').trim().split('\n').filter(Boolean).pop() || 'git failed' }; }
 };
 const count = (/** @type {string} */ root, /** @type {string} */ range) => { const result = attempt(root, ['rev-list', '--count', range]); return result.ok ? Number(result.out) : 0; };
+
+/** @param {Store} store @param {string} [upstream] @param {string} [head] */
+export function assertNoOutgoingCache(store, upstream, head = 'HEAD') {
+  const range = upstream ? `${upstream}..${head}` : head;
+  if (git(store.root, ['log', '--full-history', '-1', '--format=%H', range, '--', '.cache/'])) {
+    throw new Error('Outgoing voice store history contains changes to .cache/. Keep that history local.');
+  }
+}
 
 const statePath = (/** @type {Store} */ store) => path.join(store.cache, 'sync.json');
 const lockPath = (/** @type {Store} */ store) => path.join(store.cache, 'sync.lock');
@@ -83,6 +91,9 @@ const lock = (/** @type {Store} */ store) => {
 export function sync(store, { timeout = 15_000, push = true } = {}) {
   const { remote, branch } = remoteState(store);
   if (!remote) return { status: 'no-remote', pulled: 0, pushed: 0 };
+  try { assertStoreRoot(store); } catch {
+    return { status: 'unsafe', pulled: 0, pushed: 0, detail: 'The voice store must be the root of its own Git repository.' };
+  }
   if (!lock(store)) return { status: 'busy', pulled: 0, pushed: 0 };
   let pulled = 0, pushed = 0;
   const done = (/** @type {SyncStatus} */ status, /** @type {string} */ detail = '') => remember(store, { status, pulled, pushed, ...(detail ? { detail } : {}) });
@@ -107,7 +118,10 @@ export function sync(store, { timeout = 15_000, push = true } = {}) {
         pulled += behind;
       }
       if (!push || !ahead) return done('ok');
-      const sent = attempt(store.root, ['push', '-q', 'origin', `HEAD:refs/heads/${branch}`], timeout);
+      const head = git(store.root, ['rev-parse', 'HEAD']);
+      try { assertNoOutgoingCache(store, known ? `origin/${branch}` : undefined, head); }
+      catch (error) { return done('unsafe', /** @type {Error} */ (error).message); }
+      const sent = attempt(store.root, ['push', '-q', 'origin', `${head}:refs/heads/${branch}`], timeout);
       if (sent.ok) { pushed += ahead; if (!count(store.root, `origin/${branch}..HEAD`)) return done('ok'); continue; }
       // Rejected because another machine pushed in the meantime: go round and take theirs first.
       if (!/rejected|non-fast-forward|fetch first/i.test(sent.err)) return done('offline', sent.err);
@@ -128,6 +142,7 @@ export function describe(/** @type {Store} */ store, /** @type {SyncResult} */ r
     case 'no-remote': return 'This voice store has no remote, so there is nothing to sync with. Run `ghostpen init` to create one.';
     case 'busy': return 'Another sync is already running.';
     case 'offline': return `Could not reach the voice store's remote${moved ? ` (after it ${moved})` : ''}: ${result.detail}. Nothing was lost; it will be tried again.`;
+    case 'unsafe': return `Voice store sync stopped. ${result.detail}`;
     case 'dirty': return `${result.detail} Commit or discard them in ${store.root}, then run \`ghostpen sync\`.`;
     case 'conflict': return `${result.detail} Nothing was lost or overwritten: this machine's changes are still here and the other machine's are still on the remote. `
       + `Settle it by hand in ${store.root} with \`git pull --rebase\`, then run \`ghostpen sync\`.`;
@@ -142,7 +157,7 @@ export function due(/** @type {Store} */ store, now = Date.now()) {
   const last = lastSync(store);
   if (!last) return true;
   if (now - Date.parse(last.at) >= THROTTLE_MS) return true;
-  return remoteState(store).ahead > 0 && last.status !== 'conflict' && last.status !== 'dirty';
+  return remoteState(store).ahead > 0 && last.status !== 'conflict' && last.status !== 'dirty' && last.status !== 'unsafe';
 }
 
 /**

@@ -25,7 +25,7 @@ export function addProposal(store, input) {
   const proposal = { id: randomUUID(), version: RECORD_VERSION, summary: input.summary.trim(), guide: input.guide.trimEnd() + '\n', baseHash: hash(current), evidence: input.evidence || [], createdAt: new Date().toISOString() };
   fs.mkdirSync(store.proposals, { recursive: true });
   fs.writeFileSync(fileFor(store, proposal.id), JSON.stringify(proposal, null, 2) + '\n');
-  commit(store, 'Propose a voice guide change');
+  commit(store, 'Propose a voice guide change', fileFor(store, proposal.id));
   return proposal;
 }
 
@@ -41,12 +41,12 @@ export function acceptProposal(/** @type {import('./store.mjs').Store} */ store,
   if (hash(fs.readFileSync(store.guide, 'utf8')) !== proposal.baseHash) throw new Error('The guide has changed since this proposal was written. Reject it and distil again.');
   fs.writeFileSync(store.guide, proposal.guide);
   fs.rmSync(fileFor(store, proposal.id));
-  commit(store, `Update voice guide: ${proposal.summary.split('\n')[0].slice(0, 72)}`);
+  commit(store, `Update voice guide: ${proposal.summary.split('\n')[0].slice(0, 72)}`, store.guide, fileFor(store, proposal.id));
   return proposal;
 }
 export function rejectProposal(/** @type {import('./store.mjs').Store} */ store, /** @type {string} */ id) {
   const proposal = find(store, id);
   fs.rmSync(fileFor(store, proposal.id));
-  commit(store, 'Reject a voice guide proposal');
+  commit(store, 'Reject a voice guide proposal', fileFor(store, proposal.id));
   return proposal;
 }

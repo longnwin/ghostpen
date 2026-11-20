@@ -108,8 +108,10 @@ With automatic syncing on, a machine pulls in the background when an agent sessi
 each change to the store (new evidence, a proposal, an accepted or rejected proposal). It also pulls before
 distilling, so a voice update works from everything every machine has gathered.
 
-- **What travels:** the guide, sanitized evidence and proposals. Raw drafts, unsanitized pairs and writing
-  samples stay in `.cache`, which git ignores. They never leave the machine.
+- **What sync sends.** Git sends committed changes to your voice store's remote. With automatic sync on,
+  evidence and proposals can reach the remote before you review a guide change. Use a private remote for
+  work writing and check what it contains before sharing it. Ghostpen stops a push if outgoing history
+  includes changes to the raw `.cache/` directory.
 - **It never gets in the way.** Network steps are time-limited and run in the background. Being offline is
   not an error; the commits wait and go out next time.
 - **It never picks a winner.** If two machines changed the same part of the store, typically by accepting
@@ -154,14 +156,20 @@ Your agent finds the places and proposes each one, then the command shows you ea
 | The guide | `VOICE.md` in your voice store | Yes |
 | Sanitized examples, with a link to the original | `evidence/` | Yes |
 | Proposals waiting for you | `proposals/` | Yes |
-| Raw drafts, raw pairs and writing samples | `.cache/` | No, never |
+| Raw drafts, raw pairs and writing samples | `.cache/` | No. Ghostpen excludes these files from its commits. |
 | What `init` set up on this machine | `~/.config/ghostpen/config.json` | No |
 
-Raw text stays on the machine it was captured on. Before an example is saved, identifiers, file paths, ticket keys and names are rewritten into neutral stand-ins, and the save is refused if any of them survive. That check is mechanical and can miss things, which is one reason you approve proposals yourself.
+Ghostpen saves raw text locally. When you run seed or distil, your coding agent reads raw writing
+samples or draft pairs. A hosted Claude or Codex model can receive that text under your provider's
+data settings. Use only sources that your team allows that provider to process.
 
-The links kept with each example name the repository and pull request they came from. If your voice repo is ever shared, those names are visible even though the text is not.
+The agent rewrites specifics before saving evidence. Ghostpen checks for code-like identifiers, paths,
+ticket keys and long numbers that survive the rewrite. It can miss plain names and sensitive details in
+ordinary prose. Evidence also keeps links to the original pull requests, including private ones. Approving
+a proposal controls what enters the guide. Evidence and proposals are committed as soon as they are saved.
 
-`ghostpen` uses your own `gh` login and your own agents. It has no service of its own and sends nothing anywhere else.
+Ghostpen has no service of its own. It uses your GitHub CLI login to read GitHub, your coding agent to
+learn from writing and your voice store's Git remote to sync.
 
 ## Commands
 

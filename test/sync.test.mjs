@@ -21,8 +21,12 @@ function twoMachines(t) {
   execFileSync('git', ['clone', '-q', remote, path.join(dir, 'b', 'voice')]);
   return { dir, remote, a, b: storeAt(path.join(dir, 'b', 'voice')) };
 }
-const addEvidence = (store, name) => { fs.writeFileSync(path.join(store.evidence, `${name}.json`), JSON.stringify({ id: name }) + '\n'); commit(store, `Add ${name}`); };
-const setGuide = (store, text) => { fs.writeFileSync(store.guide, text); commit(store, 'Update voice guide'); };
+const addEvidence = (store, name) => {
+  const file = path.join(store.evidence, `${name}.json`);
+  fs.writeFileSync(file, JSON.stringify({ id: name }) + '\n');
+  commit(store, `Add ${name}`, file);
+};
+const setGuide = (store, text) => { fs.writeFileSync(store.guide, text); commit(store, 'Update voice guide', store.guide); };
 
 test('a store with no remote has nothing to sync with, and says so without failing', t => {
   const store = createStore(path.join(temp(t), 'voice'));
@@ -98,6 +102,22 @@ test('uncommitted changes to tracked files stop a sync before it touches anythin
   assert.equal(result.status, 'dirty');
   assert.match(fs.readFileSync(b.guide, 'utf8'), /Half-written/);
   assert.ok(!fs.existsSync(path.join(b.evidence, 'incoming.json')));
+});
+
+test('sync refuses to push commits that touched the raw cache even if it was removed', t => {
+  const { a, remote } = twoMachines(t);
+  const remoteHead = git(remote, 'rev-parse', 'HEAD');
+  const raw = path.join(a.cache, 'raw.txt');
+  fs.writeFileSync(raw, 'Fictional raw writing.');
+  git(a.root, 'add', '-f', '--', raw);
+  git(a.root, '-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '-qm', 'Older cache commit');
+  git(a.root, 'rm', '--', raw);
+  git(a.root, '-c', 'user.name=t', '-c', 'user.email=t@example.test', 'commit', '-qm', 'Remove cache file');
+  const result = sync(a);
+  assert.equal(result.status, 'unsafe');
+  assert.match(describe(a, result), /history contains changes to \.cache\//);
+  assert.equal(git(remote, 'rev-parse', 'HEAD'), remoteHead);
+  assert.equal(lastSync(a)?.status, 'unsafe');
 });
 
 test('a second sync cannot start while one holds the lock, and a stale lock expires', t => {

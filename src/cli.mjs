@@ -87,7 +87,7 @@ const HELP = `ghostpen — teaches your coding agents to write like you.
   ghostpen evidence add-sample --sample <id> --text <path>
                                      Save the sanitized version of one writing sample
   ghostpen seed collect [--repo <owner/repo,...>] [--before <YYYY-MM-DD>]
-                                     Gather your own past writing from GitHub (stays on this machine)
+                                     Gather your own past writing from GitHub and save it locally
   ghostpen seed [samples | --print | --run]
                                      List the samples, or print / run the steps that turn them into a first guide
   ghostpen integrate [candidates | review | decide | apply <id> | dismiss <id> | --print | --run]
@@ -128,8 +128,9 @@ try {
     const before = readText(required('before')).trim(), after = readText(required('after')).trim();
     const leaks = leakedSpecifics([pair.before, pair.after], [before, after]);
     if (leaks.length && !flag('allow-specifics')) throw new Error(`The sanitized text still contains specifics from the original: ${leaks.slice(0, 12).join(', ')}. Rewrite them, or pass --allow-specifics if they are generic.`);
-    saveEvidence(target, { id: randomUUID(), version: RECORD_VERSION, kind: pair.kind, before, after, source: pair.source, similarity: pair.similarity, recordedAt: new Date().toISOString() });
-    removePair(target, pair.id); commit(target, `Add ${pair.kind} evidence`); sent(target);
+    const saved = saveEvidence(target, { id: randomUUID(), version: RECORD_VERSION, kind: pair.kind, before, after, source: pair.source, similarity: pair.similarity, recordedAt: new Date().toISOString() });
+    commit(target, `Add ${pair.kind} evidence`, fsp.join(target.evidence, `${saved.id}.json`));
+    removePair(target, pair.id); sent(target);
     print({ saved: true });
   } else if (command === 'evidence' && args[0] === 'add-sample') {
     const target = store(), sample = samples(target).find(item => item.id === required('sample'));
@@ -138,7 +139,7 @@ try {
     const leaks = leakedSpecifics([sample.body], [text]);
     if (leaks.length && !flag('allow-specifics')) throw new Error(`The sanitized text still contains specifics from the original: ${leaks.slice(0, 12).join(', ')}. Rewrite them, or pass --allow-specifics if they are generic.`);
     const saved = saveEvidence(target, { id: randomUUID(), version: RECORD_VERSION, kind: sample.kind, before: '', after: text, source: sample.source, similarity: 0, recordedAt: new Date().toISOString(), origin: 'sample' });
-    commit(target, `Add ${sample.kind} sample evidence`); sent(target);
+    commit(target, `Add ${sample.kind} sample evidence`, fsp.join(target.evidence, `${saved.id}.json`)); sent(target);
     print({ id: saved.id });
   } else if (command === 'seed' && args[0] === 'collect') {
     const result = await collectSamples(store(), { run: ghRunner(), repos: (option('repo') || '').split(',').map(r => r.trim()).filter(Boolean), before: option('before') });
@@ -232,7 +233,7 @@ try {
       if (config.sync === 'auto') {
         // Never wait on the network here. The guide is read later in the session, by which time this has landed.
         const last = lastSync(target);
-        if (last?.status === 'conflict' || last?.status === 'dirty') lines.push(`ghostpen could not sync the user's voice store with their other machines. Tell the user early in this session, in these words: ${describe(target, last)}`);
+        if (last?.status === 'conflict' || last?.status === 'dirty' || last?.status === 'unsafe') lines.push(`ghostpen could not sync the user's voice store with their other machines. Tell the user early in this session, in these words: ${describe(target, last)}`);
         if (due(target)) syncInBackground(target);
       }
       console.log(lines.join('\n'));
@@ -245,7 +246,7 @@ try {
       // Asked for by name, so it runs whether or not automatic syncing is on.
       const target = store(), result = sync(target);
       if (!flag('quiet')) print(describe(target, result));
-      if (result.status === 'conflict' || result.status === 'dirty') process.exitCode = 1;
+      if (result.status === 'conflict' || result.status === 'dirty' || result.status === 'unsafe') process.exitCode = 1;
     }
   } else if (command === 'status') {
     const target = store(), all = drafts(target);

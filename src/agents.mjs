@@ -48,29 +48,46 @@ export function removeSkill(target) {
 }
 
 const readJson = (/** @type {string} */ file) => { try { return JSON.parse(fs.readFileSync(file, 'utf8')); } catch (error) { if (/** @type {NodeJS.ErrnoException} */ (error).code === 'ENOENT') return {}; throw new Error(`${file} is not valid JSON, so ghostpen left it alone.`); } };
-const isOurs = (/** @type {any} */ entry) => Array.isArray(entry?.hooks) && entry.hooks.some((/** @type {any} */ hook) => typeof hook?.command === 'string' && hook.command.includes(' hook session-start'));
+/** @param {any} hook @param {string[]} commands */
+const isOurs = (hook, commands) => commands.some(command => hook?.type === 'command' && hook.command === `${command} hook session-start`);
+
+/** Remove only managed commands, keeping the matcher and any other hooks in its group. @param {any[]} entries @param {string[]} commands */
+function withoutGhostpen(entries, commands) {
+  return entries.flatMap(entry => {
+    if (!Array.isArray(entry?.hooks) || !entry.hooks.some((/** @type {any} */ hook) => isOurs(hook, commands))) return [entry];
+    const hooks = entry.hooks.filter((/** @type {any} */ hook) => !isOurs(hook, commands));
+    return hooks.length ? [{ ...entry, hooks }] : [];
+  });
+}
 
 /**
  * Adds ghostpen's session-start hook, keeping every other setting in the file.
- * @param {string} file @param {string} command
+ * @param {string} file @param {string} command @param {string} [previousCommand]
  */
-export function installHook(file, command) {
+export function installHook(file, command, previousCommand) {
   const settings = readJson(file);
   settings.hooks ||= {};
-  const others = (Array.isArray(settings.hooks.SessionStart) ? settings.hooks.SessionStart : []).filter((/** @type {any} */ entry) => !isOurs(entry));
+  const entries = Array.isArray(settings.hooks.SessionStart) ? settings.hooks.SessionStart : [];
+  const others = withoutGhostpen(entries, previousCommand ? [command, previousCommand] : [command]);
   settings.hooks.SessionStart = [...others, { hooks: [{ type: 'command', command: `${command} hook session-start`, timeout: 10 }] }];
   fs.mkdirSync(path.dirname(file), { recursive: true });
   fs.writeFileSync(file, JSON.stringify(settings, null, 2) + '\n');
 }
-/** @param {string} file */
-export function removeHook(file) {
-  if (!fs.existsSync(file)) return;
+/** @param {string} file @param {string} command */
+export function removeHook(file, command) {
+  if (!fs.existsSync(file) || !command) return;
   const settings = readJson(file);
   if (!Array.isArray(settings.hooks?.SessionStart)) return;
-  settings.hooks.SessionStart = settings.hooks.SessionStart.filter((/** @type {any} */ entry) => !isOurs(entry));
+  settings.hooks.SessionStart = withoutGhostpen(settings.hooks.SessionStart, [command]);
   if (!settings.hooks.SessionStart.length) delete settings.hooks.SessionStart;
   if (!Object.keys(settings.hooks).length) delete settings.hooks;
   fs.writeFileSync(file, JSON.stringify(settings, null, 2) + '\n');
 }
-/** @param {string} file */
-export const hasHook = file => { try { return (readJson(file).hooks?.SessionStart || []).some(isOurs); } catch { return false; } };
+/** @param {string} file @param {string} command */
+export function hasHook(file, command) {
+  if (!command) return false;
+  try {
+    return (readJson(file).hooks?.SessionStart || []).some((/** @type {any} */ entry) =>
+      Array.isArray(entry?.hooks) && entry.hooks.some((/** @type {any} */ hook) => isOurs(hook, [command])));
+  } catch { return false; }
+}

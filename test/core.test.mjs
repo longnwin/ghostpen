@@ -4,7 +4,7 @@ import fs from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
 import { execFileSync } from 'node:child_process';
-import { createStore } from '../src/store.mjs';
+import { commit, createStore } from '../src/store.mjs';
 import { addPair, drafts, evidence, logDraft, pairs } from '../src/records.mjs';
 import { pairUp, similarity } from '../src/match.mjs';
 import { leakedSpecifics } from '../src/leaks.mjs';
@@ -25,6 +25,30 @@ test('a new store has a guide, history, and keeps raw text out of git; reopening
   assert.match(fs.readFileSync(store.guide, 'utf8'), /My own rule/);
   const occupied = path.join(temp(t), 'notes'); fs.mkdirSync(occupied); fs.writeFileSync(path.join(occupied, 'a.txt'), 'x');
   assert.throws(() => createStore(occupied), /not a voice store/);
+});
+
+test('a voice store commit leaves unrelated files and staged raw drafts out of history', t => {
+  const store = createStore(path.join(temp(t), 'voice'));
+  const git = (...args) => execFileSync('git', ['-C', store.root, ...args], { encoding: 'utf8' }).trim();
+  fs.writeFileSync(path.join(store.root, '.gitignore'), '');
+  logDraft(store, { kind: 'pr-comment', body: 'A fictional draft.' });
+  git('add', '--', '.cache');
+  fs.writeFileSync(path.join(store.evidence, 'scratch.txt'), 'An unrelated file.');
+  const record = path.join(store.evidence, 'new.json');
+  fs.writeFileSync(record, '{}');
+  assert.equal(commit(store, 'Add evidence', record), true);
+  assert.equal(git('diff-tree', '--no-commit-id', '--name-only', '-r', 'HEAD'), 'evidence/new.json');
+  assert.match(git('diff', '--cached', '--name-only'), /^\.cache\/drafts\//);
+  assert.match(git('status', '--porcelain'), /\?\? evidence\/scratch.txt/);
+  assert.equal(commit(store, 'Nothing changed', record), false);
+});
+
+test('a store marker inside another repository does not make it a voice store', t => {
+  const parent = createStore(path.join(temp(t), 'parent'));
+  const nested = path.join(parent.root, 'nested');
+  fs.mkdirSync(nested);
+  fs.copyFileSync(path.join(parent.root, 'ghostpen.json'), path.join(nested, 'ghostpen.json'));
+  assert.throws(() => createStore(nested), /root of its own Git repository/);
 });
 
 test('similarity tracks how much wording survived, and pairing prefers the closest text once', () => {

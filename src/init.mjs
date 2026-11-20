@@ -11,7 +11,7 @@ import { schedulerById, schedulers } from './schedulers.mjs';
 import { clearPending, hasStep, refreshStep, removeStep } from './integrate.mjs';
 import { collectSamples } from './seed.mjs';
 import { ghRunner } from './sources/github.mjs';
-import { describe, lastSync, remoteState, sync } from './sync.mjs';
+import { assertNoOutgoingCache, describe, lastSync, remoteState, sync } from './sync.mjs';
 
 const PACKAGE = fileURLToPath(new URL('..', import.meta.url));
 
@@ -70,13 +70,17 @@ export async function init({ ask, from, log = console.log }) {
   const hasRemote = spawnSync('git', ['-C', store.root, 'remote', 'get-url', 'origin'], { stdio: 'ignore' }).status === 0;
   if (!hasRemote && spawnSync('gh', ['auth', 'status'], { stdio: 'ignore' }).status === 0) {
     const name = (await ask({ id: 'remote', text: 'Create a private GitHub repository for it, so other machines can use the same voice? Type a repository name, or leave empty to skip.', fallback: '' })).trim();
-    if (name) { execFileSync('gh', ['repo', 'create', name, '--private', '--source', store.root, '--push'], { stdio: ['ignore', 'ignore', 'inherit'] }); log(`Created private repository ${name}.`); }
+    if (name) {
+      assertNoOutgoingCache(store);
+      execFileSync('gh', ['repo', 'create', name, '--private', '--source', store.root, '--push'], { stdio: ['ignore', 'ignore', 'inherit'] });
+      log(`Created private repository ${name}.`);
+    }
   }
 
   // 3b. Keeping it the same across machines. Sending evidence to the remote is a choice, never a default.
   let syncMode = 'off';
   if (spawnSync('git', ['-C', store.root, 'remote', 'get-url', 'origin'], { stdio: 'ignore' }).status === 0) {
-    syncMode = await ask({ id: 'sync', text: 'Keep this voice store in step with your other machines automatically? It pulls when a session starts and pushes after each change. Only the guide, sanitized evidence and proposals are in the repository; raw drafts never leave this machine.',
+    syncMode = await ask({ id: 'sync', text: 'Keep this voice store in step with your other machines automatically? It pulls when a session starts and pushes after each change. The voice store syncs through its Git remote. Evidence and proposals can sync before approval and may contain sensitive details.',
       choices: [{ value: 'auto', label: 'Yes, sync automatically' }, { value: 'off', label: 'No, I will run `ghostpen sync` myself' }], fallback: previous.sync === 'auto' ? 'auto' : 'off' });
     if (syncMode !== 'auto') syncMode = 'off';
     if (syncMode === 'auto') { const result = sync(store); log(describe(store, result)); }
@@ -89,7 +93,7 @@ export async function init({ ask, from, log = console.log }) {
   const wired = [];
   for (const agent of agents) {
     const skill = installSkill(agent.skillsDir, path.join(app, 'skill', 'ghostpen'), say);
-    installHook(agent.hooksFile, command);
+    installHook(agent.hooksFile, command, typeof previous.command === 'string' ? previous.command : undefined);
     if (agent.hooksNote) manual.push(agent.hooksNote);
     wired.push({ id: agent.id, name: agent.name, skill, hooksFile: agent.hooksFile });
     log(`${agent.name}: skill and session hook installed.`);
@@ -143,7 +147,7 @@ export async function init({ ask, from, log = console.log }) {
   // 7. A first guide from past writing. Collecting is plain code; turning samples into rules needs the user's agent.
   const guideIsEmpty = fs.readFileSync(store.guide, 'utf8').includes('_No rules yet.');
   if (guideIsEmpty && spawnSync('gh', ['auth', 'status'], { stdio: 'ignore' }).status === 0) {
-    const scope = (await ask({ id: 'seed', text: 'Build a first guide from what you have already written on GitHub (review comments and PR descriptions)? Text written by agents is skipped, and samples stay on this machine.',
+    const scope = (await ask({ id: 'seed', text: 'Build a first guide from what you have already written on GitHub (review comments and PR descriptions)? Ghostpen saves samples locally. Your coding agent reads them when it builds the guide.',
       choices: [{ value: 'all', label: 'Yes, from everything I have written' }, { value: 'none', label: 'No, start empty and learn from my edits' }], allowText: true, fallback: 'none' })).trim();
     if (scope && scope !== 'none') {
       const before = (await ask({ id: 'seed-before', text: 'Only use writing from before a date? Useful if agents have drafted for you recently. Type YYYY-MM-DD, or leave empty for no cutoff.', fallback: '' })).trim();
@@ -170,14 +174,14 @@ export function doctor() {
   const checks = [{ ok: fs.existsSync(storeAt(config.store).guide), item: 'Voice guide', detail: storeAt(config.store).guide }];
   for (const agent of config.agents || []) {
     checks.push({ ok: fs.existsSync(path.join(agent.skill, 'SKILL.md')), item: `${agent.name} skill`, detail: agent.skill });
-    checks.push({ ok: hasHook(agent.hooksFile), item: `${agent.name} session hook`, detail: agent.hooksFile });
+    checks.push({ ok: hasHook(agent.hooksFile, config.command), item: `${agent.name} session hook`, detail: agent.hooksFile });
   }
   for (const file of config.instructions || []) checks.push({ ok: (() => { try { return fs.readFileSync(file, 'utf8').includes('ghostpen:start'); } catch { return false; } })(), item: 'Voice line', detail: file });
   for (const file of config.integrations || []) checks.push({ ok: hasStep(file), item: 'Voice step in skill', detail: file });
   checks.push({ ok: fs.existsSync(path.join(config.app || '', 'src', 'cli.mjs')) && fs.existsSync(config.launcher || ''), item: 'ghostpen command', detail: config.launcher || config.command || '' });
   checks.push({ ok: Boolean(config.schedule?.id), item: 'Schedule', detail: config.schedule?.id || 'none' });
   const voice = storeAt(config.store), { remote, ahead, behind } = remoteState(voice), last = lastSync(voice);
-  const stuck = config.sync === 'auto' && (last?.status === 'conflict' || last?.status === 'dirty');
+  const stuck = config.sync === 'auto' && (last?.status === 'conflict' || last?.status === 'dirty' || last?.status === 'unsafe');
   checks.push({ ok: !stuck, item: 'Sync', detail: !remote ? 'no remote; this store lives on this machine only'
     : stuck && last ? describe(voice, last)
     : `${config.sync === 'auto' ? 'automatic' : 'manual (run `ghostpen sync`)'}; ${ahead} not sent, ${behind} not received as of the last check${last ? `; last sync ${last.status} at ${last.at}` : ''}` });
@@ -187,7 +191,7 @@ export function doctor() {
 /** Removes everything init wired up. The voice store itself is kept. */
 export function uninstall() {
   const config = /** @type {any} */ (readConfig());
-  for (const agent of config.agents || []) { removeSkill(agent.skill); removeHook(agent.hooksFile); }
+  for (const agent of config.agents || []) { removeSkill(agent.skill); removeHook(agent.hooksFile, config.command); }
   for (const file of config.instructions || []) removeVoiceLine(file);
   for (const file of config.integrations || []) removeStep(file);
   clearPending();
